@@ -6,7 +6,7 @@
 const CONFIG = {
   // Client ID de OAuth de Google Cloud Console (tipo "Aplicación web").
   // Ver README.md para los pasos exactos de cómo obtenerlo.
-  GOOGLE_CLIENT_ID: 'REEMPLAZA_CON_TU_GOOGLE_CLIENT_ID.apps.googleusercontent.com',
+  GOOGLE_CLIENT_ID: '155395780717-8upptag4bmknce6gujv5u2aukgd14u0f.apps.googleusercontent.com',
   // ID de la carpeta de Drive donde se guardarán los informes generados a mano alzada
   // (el PDF genérico). Déjalo vacío ('') para guardarlos en la raíz de "Mi unidad".
   DRIVE_FOLDER_ID: '',
