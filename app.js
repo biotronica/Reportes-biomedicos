@@ -215,6 +215,8 @@ function saveDraft(){
   }
   state.draft = null;
   state.editingId = null;
+  saveState();
+  if(state.driveToken){ empujarEstadoADrive().catch(()=>{}); } // de inmediato, sin esperar el retraso normal
   goTo('equipos');
   showToast('Equipo guardado.');
 }
@@ -1794,10 +1796,13 @@ let sesionSyncIdCache = null;
 async function obtenerOCrearArchivoSesion(){
   if(sesionSyncIdCache) return sesionSyncIdCache;
   const q = "name = '" + SESION_SYNC_NOMBRE + "' and '" + CONFIG.MANTENIMIENTOS_FOLDER_ID + "' in parents and trashed = false";
-  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&fields=files(id,name)', { headers: driveHeaders() });
+  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&orderBy=modifiedTime desc&fields=files(id,name)', { headers: driveHeaders() });
   if(!res.ok) throw new Error('No se pudo buscar el archivo de sincronización (HTTP ' + res.status + ')');
   const data = await res.json();
   if(data.files && data.files.length){
+    // Si por alguna razón llegara a haber más de uno con el mismo nombre, se usa
+    // siempre el modificado más recientemente (gracias al orderBy de arriba) — así
+    // nunca se lee ni se escribe por error en una copia vieja.
     sesionSyncIdCache = data.files[0].id;
     return sesionSyncIdCache;
   }
@@ -1842,7 +1847,7 @@ function nombreArchivoMantenimientoCliente(nombreCliente){
 async function guardarUltimoMantenimientoCliente(nombreCliente, equipos){
   const nombreArchivo = nombreArchivoMantenimientoCliente(nombreCliente);
   const q = "name = '" + nombreArchivo + "' and '" + CONFIG.MANTENIMIENTOS_FOLDER_ID + "' in parents and trashed = false";
-  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&fields=files(id)', { headers: driveHeaders() });
+  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&orderBy=modifiedTime desc&fields=files(id)', { headers: driveHeaders() });
   if(!res.ok) throw new Error('No se pudo buscar el registro de último mantenimiento (HTTP ' + res.status + ')');
   const data = await res.json();
   const payload = JSON.stringify({ cliente: nombreCliente, equipos, actualizadoEn: Date.now() });
@@ -1871,7 +1876,7 @@ async function cargarUltimoMantenimientoCliente(nombreCliente){
   if(!state.driveToken) return null;
   const nombreArchivo = nombreArchivoMantenimientoCliente(nombreCliente);
   const q = "name = '" + nombreArchivo + "' and '" + CONFIG.MANTENIMIENTOS_FOLDER_ID + "' in parents and trashed = false";
-  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&fields=files(id)', { headers: driveHeaders() });
+  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&orderBy=modifiedTime desc&fields=files(id)', { headers: driveHeaders() });
   if(!res.ok) return null;
   const data = await res.json();
   const archivo = (data.files || [])[0];
