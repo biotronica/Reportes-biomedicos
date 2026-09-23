@@ -789,7 +789,8 @@ async function generarActaEntrega(saludoElegido){
       try{
         setStatus('Descargada. Subiendo copia a Drive…');
         const folderId = await encontrarOCrearCarpetaCliente(state.cliente.nombre);
-        await subirArchivoBinario(blob, nombreArchivoActa, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', folderId);
+        const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
+        await subirArchivoBinario(blob, nombreArchivoActa, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', carpetaEntregaDocsId);
         setStatus('✓ Acta descargada y subida a Drive.', 'ok');
       }catch(err){
         setStatus('✓ Acta descargada (no se pudo subir a Drive: ' + err.message + ')', 'err');
@@ -2468,6 +2469,14 @@ async function generarInformeOficial(id, folderId){
 
     const carpetaPdfId = await encontrarOCrearSubcarpeta(carpetaTecnicoId, 'PDF');
     const pdfFile = await subirArchivoBinario(pdfBlob, nombre + '.pdf', 'application/pdf', carpetaPdfId);
+
+    // Copia adicional del PDF en "Entrega documentos/PDF" (junto al acta de entrega),
+    // al mismo nivel que la carpeta "Reportes" del cliente.
+    try{
+      const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
+      const carpetaEntregaPdfId = await encontrarOCrearSubcarpeta(carpetaEntregaDocsId, 'PDF');
+      await subirArchivoBinario(pdfBlob, nombre + '.pdf', 'application/pdf', carpetaEntregaPdfId);
+    }catch(e){ /* si falla esta copia adicional, no se interrumpe el informe (ya quedó guardado en Ramiro/Evelyn) */ }
 
     setStatus('Guardando copia en Excel…');
     const xlsxBlob = await exportarComoXlsx(sheetFile.id);
