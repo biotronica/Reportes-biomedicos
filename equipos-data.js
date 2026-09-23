@@ -5,6 +5,21 @@
 // aquí con el mismo formato, y su ID de archivo en TEMPLATE_FILE_IDS más abajo.
 
 const EQUIPOS_DATA = {
+  "Oftalmoscopio": [
+    "Limpieza de contactos de compartimento de baterías.",
+    "Comprobación de funcionamiento de reguladores de enfoque y lentes.",
+    "Comprobación de encendido de luz con interruptor.",
+    "Comprobación estado de baterías.",
+    "Comprobación de funcionamiento de mencanismo de encendido.",
+    "Revisión y limpieza de contactos de bombillos."
+  ],
+  "Otoscopio": [
+    "Limpieza de contactos de compartimento de batería.",
+    "Comprobación de encendido de luz con interruptor.",
+    "Comprobación estado de baterías.",
+    "Comprobación de funcionamiento de mencanismo de encendido.",
+    "Revisión y limpieza de contactos de bombillos."
+  ],
   "Agitador de Mazzini": [
     "Revision de condición física y operativa del motor.",
     "Revisión y lubricación de mecanismo rotador.",
@@ -630,6 +645,8 @@ const EQUIPOS_LISTA = Object.keys(EQUIPOS_DATA).sort((a, b) => a.localeCompare(b
 // Preventivos" dentro de MANTENIMIENTOS). Los 74 equipos ya están enlazados con su
 // plantilla oficial real.
 const TEMPLATE_FILE_IDS = {
+  "Oftalmoscopio": "1bB084Fq1QKKvgybS6GxGl0Z-OseMu0dc",
+  "Otoscopio": "1Grc3QzR1UJ6JDdS7n4GHPXqf1FH4BbEf",
   "Agitador de Mazzini": "1H-Udh2um93xYL1bWU6JFQgeLEhZT6YMK",
   "Alcoholímetro": "1Qtqmnhu53gGqDyMgcvoHjH3ZaXYSSVc6",
   "Aspirador": "1WTjLBbWMpbmIiyb6qnZuCETwnIUgT8iJ",
