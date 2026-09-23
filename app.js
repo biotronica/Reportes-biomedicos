@@ -786,14 +786,17 @@ async function generarActaEntrega(saludoElegido){
     URL.revokeObjectURL(url);
 
     if(state.driveToken){
+      let paso = 'buscando la carpeta del cliente';
       try{
         setStatus('Descargada. Subiendo copia a Drive…');
         const folderId = await encontrarOCrearCarpetaCliente(state.cliente.nombre);
+        paso = 'creando/abriendo "Entrega documentos"';
         const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
+        paso = 'subiendo el archivo';
         await subirArchivoBinario(blob, nombreArchivoActa, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', carpetaEntregaDocsId);
         setStatus('✓ Acta descargada y subida a Drive.', 'ok');
       }catch(err){
-        setStatus('✓ Acta descargada (no se pudo subir a Drive: ' + err.message + ')', 'err');
+        setStatus('✓ Acta descargada (no se pudo subir a Drive — falló ' + paso + ': ' + err.message + ')', 'err');
       }
     }else{
       setStatus('✓ Acta descargada.', 'ok');
