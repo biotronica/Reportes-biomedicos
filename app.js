@@ -706,12 +706,22 @@ function fechaLarga(fechaIso){
   return `${parseInt(m[3],10)} de ${meses[parseInt(m[2],10)-1]} de ${m[1]}`;
 }
 
-function celdaActaXml(texto, esEncabezado){
+function celdaActaXml(texto, esEncabezado, anchoTwips){
   const negrilla = esEncabezado ? '<w:b/>' : '';
   const sombreado = esEncabezado ? '<w:shd w:val="clear" w:color="auto" w:fill="D9D9D9"/>' : '';
-  return '<w:tc><w:tcPr><w:tcW w:w="1980" w:type="dxa"/>' + sombreado + '</w:tcPr>'
+  return '<w:tc><w:tcPr><w:tcW w:w="' + anchoTwips + '" w:type="dxa"/>' + sombreado + '</w:tcPr>'
     + '<w:p><w:pPr><w:spacing w:after="0"/><w:rPr><w:sz w:val="20"/></w:rPr></w:pPr>'
     + '<w:r><w:rPr>' + negrilla + '<w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">' + escapeXml(texto) + '</w:t></w:r></w:p></w:tc>';
+}
+
+// Ancho de columna estimado según el texto más largo que le vaya a caber (encabezado
+// incluido) — así "Ítem" queda apenas un poco más ancha que la palabra, y las demás
+// se ajustan a su frase más larga, en vez de repartir el ancho en partes iguales.
+function anchoColumnaActa(textos){
+  const masLargo = textos.reduce((max, t) => Math.max(max, String(t || '').length), 0);
+  const TWIPS_POR_CARACTER = 130; // aproximado para el tamaño de letra usado (10pt)
+  const RELLENO = 220; // margen interno de la celda a cada lado
+  return Math.round(masLargo * TWIPS_POR_CARACTER) + RELLENO;
 }
 
 function escapeXml(s){
@@ -756,15 +766,18 @@ async function generarActaEntrega(saludoElegido){
 
       const encabezados = ['Ítem', 'Número reporte', 'Equipo', 'Serie', 'Inventario'];
       const filasDatos = equiposAgrupadosParaActa();
-      const filaEncabezadoXml = '<w:tr><w:trPr><w:tblHeader/></w:trPr>' + encabezados.map(t => celdaActaXml(t, true)).join('') + '</w:tr>';
-      const filasDatosXml = filasDatos.map(f => '<w:tr>' + [
-        celdaActaXml(f.item, false), celdaActaXml(f.informeNo, false), celdaActaXml(f.tipo, false),
-        celdaActaXml(f.serie, false), celdaActaXml(f.codigo, false)
-      ].join('') + '</w:tr>').join('');
+      const claves = ['item', 'informeNo', 'tipo', 'serie', 'codigo'];
+      const anchos = claves.map((clave, i) => anchoColumnaActa([encabezados[i], ...filasDatos.map(f => f[clave])]));
 
+      const filaEncabezadoXml = '<w:tr><w:trPr><w:tblHeader/></w:trPr>' + encabezados.map((t, i) => celdaActaXml(t, true, anchos[i])).join('') + '</w:tr>';
+      const filasDatosXml = filasDatos.map(f => '<w:tr>' + claves.map((clave, i) => celdaActaXml(f[clave], false, anchos[i])).join('') + '</w:tr>').join('');
+
+      const anchoTotal = anchos.reduce((a, b) => a + b, 0);
+      const ANCHO_UTIL_PAGINA = 9404; // ancho de página carta menos los márgenes izquierdo/derecho de esta plantilla
+      const margenParaCentrar = Math.max(0, Math.round((ANCHO_UTIL_PAGINA - anchoTotal) / 2));
       const borde = '<w:top w:val="single" w:sz="4" w:color="999999"/><w:left w:val="single" w:sz="4" w:color="999999"/><w:bottom w:val="single" w:sz="4" w:color="999999"/><w:right w:val="single" w:sz="4" w:color="999999"/><w:insideH w:val="single" w:sz="4" w:color="999999"/><w:insideV w:val="single" w:sz="4" w:color="999999"/>';
-      const tablaXml = '<w:tbl><w:tblPr><w:tblW w:w="9900" w:type="dxa"/><w:tblBorders>' + borde + '</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>'
-        + '<w:tblGrid>' + '<w:gridCol w:w="1980"/>'.repeat(5) + '</w:tblGrid>'
+      const tablaXml = '<w:tbl><w:tblPr><w:tblW w:w="' + anchoTotal + '" w:type="dxa"/><w:tblInd w:w="' + margenParaCentrar + '" w:type="dxa"/><w:tblBorders>' + borde + '</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>'
+        + '<w:tblGrid>' + anchos.map(a => '<w:gridCol w:w="' + a + '"/>').join('') + '</w:tblGrid>'
         + filaEncabezadoXml + filasDatosXml + '</w:tbl>'
         + '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>';
 
