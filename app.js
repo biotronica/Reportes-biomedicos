@@ -706,11 +706,12 @@ function fechaLarga(fechaIso){
   return `${parseInt(m[3],10)} de ${meses[parseInt(m[2],10)-1]} de ${m[1]}`;
 }
 
-function celdaActaXml(texto, esEncabezado, anchoTwips){
+function celdaActaXml(texto, esEncabezado, anchoTwips, centrado){
   const negrilla = esEncabezado ? '<w:b/>' : '';
   const sombreado = esEncabezado ? '<w:shd w:val="clear" w:color="auto" w:fill="D9D9D9"/>' : '';
+  const alineacion = (esEncabezado || centrado) ? '<w:jc w:val="center"/>' : '';
   return '<w:tc><w:tcPr><w:tcW w:w="' + anchoTwips + '" w:type="dxa"/>' + sombreado + '</w:tcPr>'
-    + '<w:p><w:pPr><w:spacing w:after="0"/><w:rPr><w:sz w:val="20"/></w:rPr></w:pPr>'
+    + '<w:p><w:pPr><w:spacing w:after="0"/>' + alineacion + '<w:rPr><w:sz w:val="20"/></w:rPr></w:pPr>'
     + '<w:r><w:rPr>' + negrilla + '<w:sz w:val="20"/></w:rPr><w:t xml:space="preserve">' + escapeXml(texto) + '</w:t></w:r></w:p></w:tc>';
 }
 
@@ -719,13 +720,89 @@ function celdaActaXml(texto, esEncabezado, anchoTwips){
 // se ajustan a su frase más larga, en vez de repartir el ancho en partes iguales.
 function anchoColumnaActa(textos){
   const masLargo = textos.reduce((max, t) => Math.max(max, String(t || '').length), 0);
-  const TWIPS_POR_CARACTER = 130; // aproximado para el tamaño de letra usado (10pt)
-  const RELLENO = 220; // margen interno de la celda a cada lado
+  const TWIPS_POR_CARACTER = 122; // aproximado para el tamaño de letra usado (10pt)
+  const RELLENO = 140; // margen interno de la celda a cada lado
   return Math.round(masLargo * TWIPS_POR_CARACTER) + RELLENO;
 }
 
 function escapeXml(s){
   return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// Versión en PDF del acta (misma información que el Word: logo, saludo, tabla
+// agrupada/ordenada, firma) — se genera aparte con jsPDF, no convirtiendo el .docx.
+function generarActaPdfBlob(saludoTexto){
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'mm', format: 'letter' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const marginX = 20;
+  let y = 20;
+
+  doc.addImage(LOGO_INTELMEDICA_B64, 'JPEG', marginX, y, 40, 10);
+  y += 20;
+
+  doc.setFontSize(11);
+  doc.setFont(undefined, 'italic');
+  doc.text('Santiago de Cali, ' + fechaLarga(state.cliente.fecha), marginX, y);
+  y += 10;
+  doc.text(saludoTexto, marginX, y);
+  y += 8;
+  doc.setFont(undefined, 'bold');
+  doc.text(state.cliente.nombre || '', marginX, y);
+  y += 10;
+  doc.text('Ref. Reportes de mantenimiento preventivo', marginX, y);
+  y += 8;
+  doc.setFont(undefined, 'italic');
+  const intro = doc.splitTextToSize('A continuación, se relaciona la entrega de reportes de mantenimiento de los siguientes equipos:', pageW - marginX*2);
+  doc.text(intro, marginX, y);
+  y += intro.length * 5 + 4;
+  doc.setFont(undefined, 'normal');
+
+  // Tabla: mismos anchos por contenido y el mismo orden que la tabla del Word.
+  const encabezados = ['Ítem', 'Número reporte', 'Equipo', 'Serie', 'Inventario'];
+  const claves = ['item', 'informeNo', 'tipo', 'serie', 'codigo'];
+  const filasDatos = equiposAgrupadosParaActa();
+  const MM_POR_CARACTER = 2.1, RELLENO_MM = 4;
+  const anchosMm = claves.map((clave, i) => {
+    const textos = [encabezados[i], ...filasDatos.map(f => String(f[clave] || ''))];
+    const masLargo = textos.reduce((m, t) => Math.max(m, t.length), 0);
+    return masLargo * MM_POR_CARACTER + RELLENO_MM;
+  });
+  const anchoTablaTotal = anchosMm.reduce((a,b) => a+b, 0);
+  const xInicial = marginX + Math.max(0, (pageW - marginX*2 - anchoTablaTotal) / 2);
+  const alturaFila = 7;
+
+  function filaTabla(valores, esEncabezado){
+    let x = xInicial;
+    doc.setFont(undefined, esEncabezado ? 'bold' : 'normal');
+    doc.setFontSize(9);
+    if(esEncabezado){ doc.setFillColor(217,217,217); doc.rect(xInicial, y, anchoTablaTotal, alturaFila, 'F'); }
+    anchosMm.forEach((ancho, i) => {
+      const texto = String(valores[i] == null ? '' : valores[i]);
+      const centrar = esEncabezado || claves[i] === 'item';
+      const tx = centrar ? x + ancho/2 : x + 1.5;
+      doc.text(texto, tx, y + alturaFila - 2.3, centrar ? { align: 'center' } : undefined);
+      doc.rect(x, y, ancho, alturaFila);
+      x += ancho;
+    });
+    y += alturaFila;
+  }
+
+  filaTabla(encabezados, true);
+  filasDatos.forEach(f => filaTabla(claves.map(c => f[c]), false));
+  y += 12;
+
+  doc.setFont(undefined, 'italic');
+  doc.setFontSize(11);
+  doc.text('Cordialmente,', marginX, y);
+  y += 4;
+  doc.addImage(FIRMA_RAMIRO_B64, 'PNG', marginX, y, 25, 15);
+  y += 20;
+  doc.text('Ramiro Díaz', marginX, y);
+  y += 5;
+  doc.text('Coordinador de Electromedicina', marginX, y);
+
+  return doc.output('blob');
 }
 
 async function generarActaEntrega(saludoElegido){
@@ -770,7 +847,7 @@ async function generarActaEntrega(saludoElegido){
       const anchos = claves.map((clave, i) => anchoColumnaActa([encabezados[i], ...filasDatos.map(f => f[clave])]));
 
       const filaEncabezadoXml = '<w:tr><w:trPr><w:tblHeader/></w:trPr>' + encabezados.map((t, i) => celdaActaXml(t, true, anchos[i])).join('') + '</w:tr>';
-      const filasDatosXml = filasDatos.map(f => '<w:tr>' + claves.map((clave, i) => celdaActaXml(f[clave], false, anchos[i])).join('') + '</w:tr>').join('');
+      const filasDatosXml = filasDatos.map(f => '<w:tr>' + claves.map((clave, i) => celdaActaXml(f[clave], false, anchos[i], clave === 'item')).join('') + '</w:tr>').join('');
 
       const anchoTotal = anchos.reduce((a, b) => a + b, 0);
       const ANCHO_UTIL_PAGINA = 9404; // ancho de página carta menos los márgenes izquierdo/derecho de esta plantilla
@@ -800,9 +877,15 @@ async function generarActaEntrega(saludoElegido){
         paso = 'creando/abriendo "Entrega documentos"';
         const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
         const carpetaEntregaAnioId = await encontrarOCrearSubcarpeta(carpetaEntregaDocsId, String(new Date().getFullYear()));
-        paso = 'subiendo el archivo';
+        paso = 'subiendo el archivo Word';
         await subirArchivoBinario(blob, nombreArchivoActa, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', carpetaEntregaAnioId);
-        setStatus('✓ Subida a Drive. Descargando…', 'ok');
+        paso = 'generando y subiendo el PDF del acta';
+        const SALUDOS_PDF = { empresa: 'Señores', hombre: 'Señor', mujer: 'Señora', doctor: 'Dr.' };
+        const pdfBlobActa = generarActaPdfBlob(SALUDOS_PDF[saludoElegido] || 'Señores');
+        const carpetaEntregaPdfId = await encontrarOCrearSubcarpeta(carpetaEntregaAnioId, 'PDF');
+        const nombreArchivoActaPdf = nombreArchivoActa.replace(/\.docx$/, '.pdf');
+        await subirArchivoBinario(pdfBlobActa, nombreArchivoActaPdf, 'application/pdf', carpetaEntregaPdfId);
+        setStatus('✓ Subida a Drive (Word y PDF). Descargando…', 'ok');
       }catch(err){
         setStatus('No se pudo subir a Drive — falló ' + paso + ': ' + err.message + '. Descargando de todas formas…', 'err');
       }
