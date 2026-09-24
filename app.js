@@ -777,29 +777,36 @@ async function generarActaEntrega(saludoElegido){
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     });
 
-    const nombreArchivoActa = 'Acta_de_entrega_' + sanitizeFilename(state.cliente.nombre || 'cliente') + '.docx';
+    const nombreArchivoActa = sanitizeFilename('ACTA ' + fechaLarga(state.cliente.fecha || todayISO())) + '.docx';
 
+    if(state.driveToken){
+      let paso = 'buscando la carpeta del cliente';
+      try{
+        setStatus('Subiendo a Drive…');
+        const folderId = await encontrarOCrearCarpetaCliente(state.cliente.nombre);
+        paso = 'creando/abriendo "Entrega documentos"';
+        const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
+        const carpetaEntregaAnioId = await encontrarOCrearSubcarpeta(carpetaEntregaDocsId, String(new Date().getFullYear()));
+        paso = 'subiendo el archivo';
+        await subirArchivoBinario(blob, nombreArchivoActa, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', carpetaEntregaAnioId);
+        setStatus('✓ Subida a Drive. Descargando…', 'ok');
+      }catch(err){
+        setStatus('No se pudo subir a Drive — falló ' + paso + ': ' + err.message + '. Descargando de todas formas…', 'err');
+      }
+    }
+
+    // La descarga al dispositivo se dispara al final: en iPhone, el propio acto de
+    // descargar puede interrumpir las peticiones de red que sigan justo después,
+    // así que primero se asegura la copia en Drive y solo al final se descarga.
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url; a.download = nombreArchivoActa;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
-
     if(state.driveToken){
-      let paso = 'buscando la carpeta del cliente';
-      try{
-        setStatus('Descargada. Subiendo copia a Drive…');
-        const folderId = await encontrarOCrearCarpetaCliente(state.cliente.nombre);
-        paso = 'creando/abriendo "Entrega documentos"';
-        const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
-        paso = 'subiendo el archivo';
-        await subirArchivoBinario(blob, nombreArchivoActa, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', carpetaEntregaDocsId);
-        setStatus('✓ Acta descargada y subida a Drive.', 'ok');
-      }catch(err){
-        setStatus('✓ Acta descargada (no se pudo subir a Drive — falló ' + paso + ': ' + err.message + ')', 'err');
-      }
+      showToast('Acta subida a Drive y descargada.');
     }else{
-      setStatus('✓ Acta descargada.', 'ok');
+      showToast('Acta descargada.');
     }
   }catch(err){
     setStatus('Error al generar el acta: ' + (err && err.message ? err.message : 'intenta de nuevo'), 'err');
@@ -1627,6 +1634,21 @@ function numeroReporteEsImpar(informeNo){
   const m = /\d+/.exec(String(informeNo || ''));
   if(!m) return true;
   return parseInt(m[0], 10) % 2 !== 0;
+}
+
+// Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
+// así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
+// no por el día exacto en que se generó el archivo.
+function nombreAnioVisita(){
+  const m = /^(\d{4})-/.exec(state.cliente.fecha || '');
+  return m ? m[1] : String(new Date().getFullYear());
+}
+
+function nombreMesVisita(){
+  const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(state.cliente.fecha || '');
+  if(!m) return meses[new Date().getMonth()];
+  return meses[parseInt(m[2],10) - 1];
 }
 
 async function encontrarOCrearSubcarpeta(carpetaPadreId, nombreSubcarpeta){
@@ -2467,23 +2489,31 @@ async function generarInformeOficial(id, folderId){
 
     // Impares -> "Ramiro", pares -> "Evelyn" (según el número de informe). Si no se
     // escribió número, se usa "Ramiro" por defecto (ya se avisó antes de llegar aquí).
+    const carpetaReportesId = await encontrarOCrearSubcarpeta(folderId, 'Reportes');
     const nombreSubcarpetaTecnico = numeroReporteEsImpar(eq.informeNo) ? 'Ramiro' : 'Evelyn';
-    const carpetaTecnicoId = await encontrarOCrearSubcarpeta(folderId, nombreSubcarpetaTecnico);
+    const carpetaTecnicoId = await encontrarOCrearSubcarpeta(carpetaReportesId, nombreSubcarpetaTecnico);
 
-    const carpetaPdfId = await encontrarOCrearSubcarpeta(carpetaTecnicoId, 'PDF');
+    // Dentro de Ramiro/Evelyn, los archivos se organizan por año y luego por mes
+    // (según la fecha de la visita) — si esas carpetas ya existen, simplemente se
+    // depositan ahí.
+    const carpetaAnioId = await encontrarOCrearSubcarpeta(carpetaTecnicoId, nombreAnioVisita());
+    const carpetaMesId = await encontrarOCrearSubcarpeta(carpetaAnioId, nombreMesVisita());
+
+    const carpetaPdfId = await encontrarOCrearSubcarpeta(carpetaMesId, 'PDF');
     const pdfFile = await subirArchivoBinario(pdfBlob, nombre + '.pdf', 'application/pdf', carpetaPdfId);
 
-    // Copia adicional del PDF en "Entrega documentos/PDF" (junto al acta de entrega),
-    // al mismo nivel que la carpeta "Reportes" del cliente.
+    // Copia adicional del PDF en "Entrega documentos/[año]/PDF" (junto al acta de
+    // entrega), al mismo nivel que la carpeta "Reportes" del cliente.
     try{
       const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
-      const carpetaEntregaPdfId = await encontrarOCrearSubcarpeta(carpetaEntregaDocsId, 'PDF');
+      const carpetaEntregaAnioId = await encontrarOCrearSubcarpeta(carpetaEntregaDocsId, String(new Date().getFullYear()));
+      const carpetaEntregaPdfId = await encontrarOCrearSubcarpeta(carpetaEntregaAnioId, 'PDF');
       await subirArchivoBinario(pdfBlob, nombre + '.pdf', 'application/pdf', carpetaEntregaPdfId);
     }catch(e){ /* si falla esta copia adicional, no se interrumpe el informe (ya quedó guardado en Ramiro/Evelyn) */ }
 
     setStatus('Guardando copia en Excel…');
     const xlsxBlob = await exportarComoXlsx(sheetFile.id);
-    const xlsxFile = await subirArchivoBinario(xlsxBlob, nombre + '.xlsx', MIME_XLSX, carpetaTecnicoId);
+    const xlsxFile = await subirArchivoBinario(xlsxBlob, nombre + '.xlsx', MIME_XLSX, carpetaMesId);
 
     // La copia de Google Sheets ya no hace falta: el Excel y el PDF quedan como
     // los archivos finales en la carpeta del cliente.
