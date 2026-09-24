@@ -5,6 +5,15 @@
 // aquí con el mismo formato, y su ID de archivo en TEMPLATE_FILE_IDS más abajo.
 
 const EQUIPOS_DATA = {
+  "Generador de ozono": [
+    "Revisión de conexiones eléctricas y cableado.",
+    "Comprobación de generación de ozono por percepción del olor característico.",
+    "Revisión de sellos y empaques para evitar fugas de gas.",
+    "Revisión de condición física de mangueras.",
+    "Revisión de condición física de tarjetas electrónicas.",
+    "Revisión del teclado de programación y activación de salida de ozono.",
+    "Revisión de display."
+  ],
   "Oftalmoscopio": [
     "Limpieza de contactos de compartimento de baterías.",
     "Comprobación de funcionamiento de reguladores de enfoque y lentes.",
@@ -645,6 +654,7 @@ const EQUIPOS_LISTA = Object.keys(EQUIPOS_DATA).sort((a, b) => a.localeCompare(b
 // Preventivos" dentro de MANTENIMIENTOS). Los 74 equipos ya están enlazados con su
 // plantilla oficial real.
 const TEMPLATE_FILE_IDS = {
+  "Generador de ozono": "1KSt5zjPQGJl1bGdOfVp0YFgtqZDr8jQr",
   "Oftalmoscopio": "1bB084Fq1QKKvgybS6GxGl0Z-OseMu0dc",
   "Otoscopio": "1Grc3QzR1UJ6JDdS7n4GHPXqf1FH4BbEf",
   "Agitador de Mazzini": "1H-Udh2um93xYL1bWU6JFQgeLEhZT6YMK",
