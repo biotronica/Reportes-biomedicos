@@ -1606,7 +1606,7 @@ async function encontrarOCrearCarpetaCliente(nombreCliente){
   const data = await res.json();
   const objetivo = normNombre(nombre);
   const exacta = (data.files || []).find(f => normNombre(f.name) === objetivo);
-  if(exacta) return await usarSubcarpetaReportesSiExiste(exacta.id);
+  if(exacta) return exacta.id;
 
   const createRes = await fetch('https://www.googleapis.com/drive/v3/files', {
     method: 'POST',
