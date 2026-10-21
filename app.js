@@ -2446,14 +2446,39 @@ async function upsertClienteEnBase(cliente){
   clientesCache = null; // se vuelve a cargar la próxima vez que haga falta
 }
 
+// Columnas G-M del Historial: datos del equipo que usa la Plataforma Biomédica para
+// armar el historial por equipo y calcular el próximo mantenimiento.
+const HISTORIAL_COLUMNAS_EXTRA = ['Marca', 'Modelo', 'Serie', 'Código', 'Ubicación', 'Tipo mantenimiento', 'Responsable'];
+let encabezadosExtraListos = false;
+
+async function asegurarEncabezadosHistorial(id){
+  if(encabezadosExtraListos) return;
+  try{
+    const actuales = await leerRangoSheet(id, 'Historial!G1:M1');
+    if(!(actuales[0] && actuales[0][2] === 'Serie')){
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Historial!G1:M1?valueInputOption=RAW', {
+        method: 'PUT',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
+        body: JSON.stringify({ values: [HISTORIAL_COLUMNAS_EXTRA] })
+      });
+    }
+    encabezadosExtraListos = true;
+  }catch(e){ /* no bloquea el registro */ }
+}
+
 async function registrarVisitaCliente(cliente, equipo, links){
   await upsertClienteEnBase(cliente);
   const id = await obtenerOCrearBaseClientes();
+  await asegurarEncabezadosHistorial(id);
 
-  await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Historial!A:F:append?valueInputOption=RAW', {
+  await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Historial!A:M:append?valueInputOption=RAW', {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
-    body: JSON.stringify({ values: [[cliente.fecha, cliente.nombre, equipo.tipo, equipo.informeNo || '', links.excelUrl || '', links.pdfUrl || '']] })
+    body: JSON.stringify({ values: [[
+      cliente.fecha, cliente.nombre, equipo.tipo, equipo.informeNo || '', links.excelUrl || '', links.pdfUrl || '',
+      equipo.marca || '', equipo.modelo || '', equipo.serie || '', equipo.codigo || '', equipo.ubicacion || '',
+      equipo.tipoMantenimiento || '', equipo.responsable || ''
+    ]] })
   });
 
   clientesCache = null; // se recarga la próxima vez que se abra la base de clientes
