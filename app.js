@@ -875,9 +875,25 @@ function cancelarActaEntrega(){
 
 // Agrupa los equipos por tipo, ordena los grupos alfabéticamente (ascendente) y
 // numera los ítems de forma continua a lo largo de toda la tabla.
-function equiposAgrupadosParaActa(){
+// 'correctivo' (incluye diagnóstico) o 'preventivo' (preventivo y predictivo).
+function grupoMantenimientoActa(eq){
+  return (eq.tipoMantenimiento === 'Correctivo' || eq.tipoMantenimiento === 'Diagnóstico') ? 'correctivo' : 'preventivo';
+}
+// Una relación por servicio: preventivo primero, luego correctivo. Cada tabla numera desde 1.
+function seccionesActa(){
+  const out = [];
+  ['preventivo', 'correctivo'].forEach(g => {
+    const filas = equiposAgrupadosParaActa(g);
+    if(filas.length) out.push({ grupo: g, texto: 'mantenimiento ' + g, filas });
+  });
+  if(!out.length) out.push({ grupo: 'preventivo', texto: 'mantenimiento preventivo', filas: [] });
+  return out;
+}
+
+function equiposAgrupadosParaActa(grupo){
   const grupos = {};
   state.equipos.forEach(eq => {
+    if(grupo && grupoMantenimientoActa(eq) !== grupo) return;
     const clave = eq.tipo || 'Sin tipo';
     if(!grupos[clave]) grupos[clave] = [];
     grupos[clave].push(eq);
@@ -946,12 +962,13 @@ function generarActaPdfBlob(saludoTexto){
   }
   pintarFondo();
 
-  // Si el acta cabe en una sola página, el espacio libre se reparte en partes iguales entre
-  // los bloques (fecha, saludo, cliente, referencia, tabla, firma) para que quede pareja.
-  const nFilasActa = equiposAgrupadosParaActa().length;
+  // Si el acta cabe en una sola página (y hay una sola relación), el espacio libre se reparte
+  // en partes iguales entre los bloques. Con dos relaciones el contenido fluye seguido.
+  const secciones = seccionesActa();
+  const nFilasActa = secciones.reduce((t, sec) => t + sec.filas.length, 0);
   const altoBloque = 10 + 8 + 10 + 8 + 9 + 11 + 7 * nFilasActa + 12 + 4 + 20 + 5 + 5;
   let gap = 0;
-  if(altoBloque < Y_FIN_FIRMA - Y_INICIO){
+  if(secciones.length === 1 && altoBloque < Y_FIN_FIRMA - Y_INICIO){
     gap = Math.min(30, (Y_FIN_FIRMA - Y_INICIO - altoBloque) / 4); // la firma termina más arriba, no pegada al pie
   }
 
@@ -964,61 +981,71 @@ function generarActaPdfBlob(saludoTexto){
   doc.setFont(undefined, 'bold');
   doc.text(state.cliente.nombre || '', marginX, y);
   y += 8;
-  doc.text('Ref. Reportes de mantenimiento preventivo', marginX, y);
-  y += 8 + gap;
-  doc.setFont(undefined, 'italic');
-  const intro = doc.splitTextToSize('A continuación, se relaciona la entrega de reportes de mantenimiento de los siguientes equipos:', pageW - marginX*2);
-  doc.text(intro, marginX, y);
-  y += intro.length * 5 + 4 + gap;
-  doc.setFont(undefined, 'normal');
 
-  // Tabla: mismos anchos por contenido y el mismo orden que la tabla del Word.
   const encabezados = ['Ítem', 'Numero\nreporte', 'Equipo', 'Serie', 'Inventario'];
   const claves = ['item', 'informeNo', 'tipo', 'serie', 'codigo'];
   const CENTRADAS = ['item', 'informeNo', 'codigo'];
-  const filasDatos = equiposAgrupadosParaActa();
   const MM_POR_CARACTER = 2.1, RELLENO_MM = 4;
-  const anchosMm = claves.map((clave, i) => {
-    const lineas = [encabezados[i], ...filasDatos.map(f => String(f[clave] || ''))].flatMap(t => String(t).split('\n'));
-    const masLargo = lineas.reduce((m, t) => Math.max(m, t.length), 0);
-    return masLargo * MM_POR_CARACTER + RELLENO_MM;
-  });
-  const anchoTablaTotal = anchosMm.reduce((a,b) => a+b, 0);
-  const xInicial = marginX + Math.max(0, (pageW - marginX*2 - anchoTablaTotal) / 2);
   const alturaFila = 7;
   const alturaFilaEncabezado = 11;
 
-  function filaTabla(valores, esEncabezado, esRepeticion){
-    let x = xInicial;
-    const alto = esEncabezado ? alturaFilaEncabezado : alturaFila;
-    if(!esEncabezado && !esRepeticion && y + alto > Y_LIMITE){
-      doc.addPage();
-      pintarFondo();
-      y = Y_INICIO;
-      filaTabla(encabezados, true, true);
+  secciones.forEach((sec, idxSec) => {
+    // Cada relación: referencia, frase, tabla (con el mismo orden y anchos que el Word).
+    if(idxSec > 0){
+      y += 8;
+      if(y + 45 > Y_LIMITE){ doc.addPage(); pintarFondo(); y = Y_INICIO; }
     }
-    doc.setFont(undefined, esEncabezado ? 'bold' : 'normal');
-    doc.setFontSize(9);
-    if(esEncabezado){ doc.setFillColor(217,217,217); doc.rect(xInicial, y, anchoTablaTotal, alto, 'F'); }
-    anchosMm.forEach((ancho, i) => {
-      const lineas = String(valores[i] == null ? '' : valores[i]).split('\n');
-      const centrar = esEncabezado || CENTRADAS.includes(claves[i]);
-      const tx = centrar ? x + ancho/2 : x + 1.5;
-      const yTextoInicial = esEncabezado
-        ? (lineas.length > 1 ? y + 4.3 : y + alto/2 + 1.5)
-        : y + alto - 2.3;
-      lineas.forEach((linea, li) => {
-        doc.text(linea, tx, yTextoInicial + li * 4, centrar ? { align: 'center' } : undefined);
-      });
-      doc.rect(x, y, ancho, alto);
-      x += ancho;
-    });
-    y += alto;
-  }
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'bold');
+    doc.text('Ref. Reportes de ' + sec.texto, marginX, y);
+    y += 8 + gap;
+    doc.setFont(undefined, 'italic');
+    const intro = doc.splitTextToSize('A continuación, se relaciona la entrega de reportes de mantenimiento de los siguientes equipos:', pageW - marginX*2);
+    doc.text(intro, marginX, y);
+    y += intro.length * 5 + 4 + gap;
+    doc.setFont(undefined, 'normal');
 
-  filaTabla(encabezados, true);
-  filasDatos.forEach(f => filaTabla(claves.map(c => f[c]), false));
-  y += 12 + gap;
+    const filasDatos = sec.filas;
+    const anchosMm = claves.map((clave, i) => {
+      const lineas = [encabezados[i], ...filasDatos.map(f => String(f[clave] || ''))].flatMap(t => String(t).split('\n'));
+      const masLargo = lineas.reduce((m, t) => Math.max(m, t.length), 0);
+      return masLargo * MM_POR_CARACTER + RELLENO_MM;
+    });
+    const anchoTablaTotal = anchosMm.reduce((a,b) => a+b, 0);
+    const xInicial = marginX + Math.max(0, (pageW - marginX*2 - anchoTablaTotal) / 2);
+
+    function filaTabla(valores, esEncabezado, esRepeticion){
+      let x = xInicial;
+      const alto = esEncabezado ? alturaFilaEncabezado : alturaFila;
+      if(!esEncabezado && !esRepeticion && y + alto > Y_LIMITE){
+        doc.addPage();
+        pintarFondo();
+        y = Y_INICIO;
+        filaTabla(encabezados, true, true);
+      }
+      doc.setFont(undefined, esEncabezado ? 'bold' : 'normal');
+      doc.setFontSize(9);
+      if(esEncabezado){ doc.setFillColor(217,217,217); doc.rect(xInicial, y, anchoTablaTotal, alto, 'F'); }
+      anchosMm.forEach((ancho, i) => {
+        const lineas = String(valores[i] == null ? '' : valores[i]).split('\n');
+        const centrar = esEncabezado || CENTRADAS.includes(claves[i]);
+        const tx = centrar ? x + ancho/2 : x + 1.5;
+        const yTextoInicial = esEncabezado
+          ? (lineas.length > 1 ? y + 4.3 : y + alto/2 + 1.5)
+          : y + alto - 2.3;
+        lineas.forEach((linea, li) => {
+          doc.text(linea, tx, yTextoInicial + li * 4, centrar ? { align: 'center' } : undefined);
+        });
+        doc.rect(x, y, ancho, alto);
+        x += ancho;
+      });
+      y += alto;
+    }
+
+    filaTabla(encabezados, true);
+    filasDatos.forEach(f => filaTabla(claves.map(c => f[c]), false));
+    y += 12 + gap;
+  });
 
   if(y + 30 > Y_LIMITE + 6){ doc.addPage(); pintarFondo(); y = Y_INICIO; }
   doc.setFont(undefined, 'italic');
@@ -1071,24 +1098,57 @@ async function generarActaEntrega(saludoElegido){
       const idxFinParrafo = xml.lastIndexOf('<w:p ', idxCordialmente);
 
       const encabezados = ['Ítem', 'Numero\nreporte', 'Equipo', 'Serie', 'Inventario'];
-      const filasDatos = equiposAgrupadosParaActa();
       const claves = ['item', 'informeNo', 'tipo', 'serie', 'codigo'];
       const CENTRADAS = ['item', 'informeNo', 'codigo'];
-      const anchos = claves.map((clave, i) => anchoColumnaActa([encabezados[i], ...filasDatos.map(f => f[clave])]));
-
-      const filaEncabezadoXml = '<w:tr><w:trPr><w:tblHeader/></w:trPr>' + encabezados.map((t, i) => celdaActaXml(t, true, anchos[i])).join('') + '</w:tr>';
-      const filasDatosXml = filasDatos.map(f => '<w:tr>' + claves.map((clave, i) => celdaActaXml(f[clave], false, anchos[i], CENTRADAS.includes(clave))).join('') + '</w:tr>').join('');
-
-      const anchoTotal = anchos.reduce((a, b) => a + b, 0);
       const ANCHO_UTIL_PAGINA = 9404; // ancho de página carta menos los márgenes izquierdo/derecho de esta plantilla
-      const margenParaCentrar = Math.max(0, Math.round((ANCHO_UTIL_PAGINA - anchoTotal) / 2));
       const borde = '<w:top w:val="single" w:sz="4" w:color="999999"/><w:left w:val="single" w:sz="4" w:color="999999"/><w:bottom w:val="single" w:sz="4" w:color="999999"/><w:right w:val="single" w:sz="4" w:color="999999"/><w:insideH w:val="single" w:sz="4" w:color="999999"/><w:insideV w:val="single" w:sz="4" w:color="999999"/>';
-      const tablaXml = '<w:tbl><w:tblPr><w:tblW w:w="' + anchoTotal + '" w:type="dxa"/><w:tblInd w:w="' + margenParaCentrar + '" w:type="dxa"/><w:tblBorders>' + borde + '</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>'
-        + '<w:tblGrid>' + anchos.map(a => '<w:gridCol w:w="' + a + '"/>').join('') + '</w:tblGrid>'
-        + filaEncabezadoXml + filasDatosXml + '</w:tbl>'
-        + '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>';
 
-      xml = xml.slice(0, idxInicioTabla) + tablaXml + xml.slice(idxFinParrafo);
+      const construirTabla = (filasDatos) => {
+        const anchos = claves.map((clave, i) => anchoColumnaActa([encabezados[i], ...filasDatos.map(f => f[clave])]));
+        const filaEncabezadoXml = '<w:tr><w:trPr><w:tblHeader/></w:trPr>' + encabezados.map((t, i) => celdaActaXml(t, true, anchos[i])).join('') + '</w:tr>';
+        const filasDatosXml = filasDatos.map(f => '<w:tr>' + claves.map((clave, i) => celdaActaXml(f[clave], false, anchos[i], CENTRADAS.includes(clave))).join('') + '</w:tr>').join('');
+        const anchoTotal = anchos.reduce((acc, v) => acc + v, 0);
+        const margenParaCentrar = Math.max(0, Math.round((ANCHO_UTIL_PAGINA - anchoTotal) / 2));
+        return '<w:tbl><w:tblPr><w:tblW w:w="' + anchoTotal + '" w:type="dxa"/><w:tblInd w:w="' + margenParaCentrar + '" w:type="dxa"/><w:tblBorders>' + borde + '</w:tblBorders><w:tblLook w:val="04A0"/></w:tblPr>'
+          + '<w:tblGrid>' + anchos.map(g => '<w:gridCol w:w="' + g + '"/>').join('') + '</w:tblGrid>'
+          + filaEncabezadoXml + filasDatosXml + '</w:tbl>'
+          + '<w:p><w:pPr><w:spacing w:after="0"/></w:pPr></w:p>';
+      };
+
+      // Una relación por servicio (preventivo / correctivo). La primera usa los párrafos de la
+      // plantilla; la segunda, si existe, es una copia de "Ref." + frase + su propia tabla.
+      const secciones = seccionesActa();
+      const inicioPar = (idx) => Math.max(xml.lastIndexOf('<w:p ', idx), xml.lastIndexOf('<w:p>', idx));
+      const finPar = (idx) => xml.indexOf('</w:p>', idx) + 6;
+      const kRef = xml.indexOf('<w:t xml:space="preserve">Ref. </w:t>');
+      const kIntro = xml.indexOf('<w:t xml:space="preserve">A </w:t>');
+      let refXml = '', introXml = '';
+      if(kRef > 0 && kIntro > 0){
+        refXml = xml.slice(inicioPar(kRef), finPar(kRef));
+        introXml = xml.slice(inicioPar(kIntro), finPar(kIntro));
+      }
+      const limpiarIds = (x) => x.replace(/ w14:paraId="[^"]*"/g, '').replace(/ w14:textId="[^"]*"/g, '');
+      const textoRef = (grupo) => refXml.replace('<w:t>mantenimiento preventivo</w:t>', '<w:t>mantenimiento ' + grupo + '</w:t>');
+
+      let idxRefCambiado = false;
+      let seccionesXml = construirTabla(secciones[0].filas);
+      if(secciones.length > 1 && refXml && introXml){
+        const sep = '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="400" w:lineRule="exact"/></w:pPr></w:p>';
+        const conInterlineado = (x) => x.replace('<w:pPr>', '<w:pPr><w:spacing w:before="0" w:after="0" w:line="360" w:lineRule="auto"/>');
+        seccionesXml += sep + limpiarIds(conInterlineado(textoRef(secciones[1].grupo))) + limpiarIds(introXml) + construirTabla(secciones[1].filas);
+      }else if(secciones[0].grupo === 'correctivo'){
+        // Solo correctivos: el enunciado de la referencia cambia.
+        xml = xml.replace('<w:t>mantenimiento preventivo</w:t>', '<w:t>mantenimiento correctivo</w:t>');
+        idxRefCambiado = true;
+      }
+
+      // (índices recalculados por si el reemplazo anterior cambió la longitud)
+      const idxInicio2 = xml.indexOf(marcadorInicio);
+      const idxCordialmente2 = xml.indexOf('<w:t>Cordialmente,</w:t>');
+      const idxInicioTabla2 = idxInicio2 + marcadorInicio.length;
+      const idxFinParrafo2 = xml.lastIndexOf('<w:p ', idxCordialmente2);
+      xml = xml.slice(0, idxInicioTabla2) + seccionesXml + xml.slice(idxFinParrafo2);
+      var hayDosSecciones = secciones.length > 1;
     }
 
     // Margen superior de toda la página por debajo de las ondas del membrete: así la fecha
@@ -1116,7 +1176,7 @@ async function generarActaEntrega(saludoElegido){
       const nF = equiposAgrupadosParaActa().length;
       const altoMm = 6 + 9 + 9 + 9 + 7 + 11 + 7 * nF + 36;
       const gapMm = Math.min(30, (166 - altoMm) / 4) * 0.85; // 0.85 = margen para no pasar a 2 páginas
-      if(gapMm > 4){
+      if(gapMm > 4 && !(typeof hayDosSecciones !== 'undefined' && hayDosSecciones)){
         const tw = Math.round(gapMm * 56.7);
         const esp = '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="' + tw + '" w:lineRule="exact"/><w:rPr><w:sz w:val="2"/></w:rPr></w:pPr></w:p>';
         const inicioParrafo = (idx) => Math.max(xml.lastIndexOf('<w:p ', idx), xml.lastIndexOf('<w:p>', idx));
