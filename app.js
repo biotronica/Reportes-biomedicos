@@ -376,6 +376,9 @@ function saveDraft(){
   if(!d.tipo){ showToast('Selecciona el tipo de equipo antes de guardar.'); return; }
   if(!d.tipoMantenimiento){ showToast('Selecciona el tipo de mantenimiento antes de guardar.'); return; }
   if(!d.marca && !d.serie && !d.codigo){ showToast('Agrega al menos marca, serie o código interno.'); return; }
+  if((d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') && !String(d.diagnostico || '').trim()){
+    showToast('Escribe el diagnóstico: en ' + d.tipoMantenimiento.toLowerCase() + ' reemplaza la frase "Equipo programado para mantenimiento preventivo".'); return;
+  }
   if(state.editingId){
     const idx = state.equipos.findIndex(e => e.id === state.editingId);
     if(idx>-1) state.equipos[idx] = d; else state.equipos.push(d);
@@ -679,6 +682,7 @@ function renderFormEquipo(){
 
       <div class="card">
         <div class="card-title">🩻 Diagnóstico</div>
+        ${(d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') ? '<div class="status-line" style="text-align:left;margin:0 0 8px;">En correctivo y diagnóstico, lo que escribas aquí <b>reemplaza</b> la frase "Equipo programado para mantenimiento preventivo" del informe.</div>' : ''}
         ${fieldMicHtml('draft.diagnostico', d.diagnostico, 'Diagnóstico del equipo', true)}
       </div>
 
@@ -816,9 +820,16 @@ const ID_MASIVO = '__todos__';
 function equiposPendientes(){
   return state.equipos.filter(eq => TEMPLATE_FILE_IDS[eq.tipo] && !eq.informeOficialGenerado);
 }
+// "Generar todos" incluye también los ya generados: se generan de nuevo y los
+// archivos anteriores (PDF y Excel) se envían a la papelera de Drive.
+function equiposParaGenerarTodos(){
+  return state.equipos.filter(eq => TEMPLATE_FILE_IDS[eq.tipo]);
+}
 
 function botonMasivoHtml(){
   const pendientes = equiposPendientes();
+  const todos = equiposParaGenerarTodos();
+  const yaGenerados = todos.length - pendientes.length;
   if(state.equipos.length < 2) return ''; // no tiene sentido con 0 o 1 equipo
   const driveOn = !!state.driveToken && Date.now() < state.driveExpiry;
   const panel = panelConfirmacionHtml({ id: ID_MASIVO }, true);
@@ -827,8 +838,9 @@ function botonMasivoHtml(){
       <div class="card-title">📄 Generar todos los informes oficiales</div>
       <div class="status-line" style="text-align:left;margin:0 0 10px;">
         ${pendientes.length ? `Quedan ${pendientes.length} equipo(s) pendiente(s) por generar.` : 'Ya generaste el informe oficial de todos los equipos con plantilla.'}
+        ${yaGenerados ? `<br>Los ${yaGenerados} ya generado(s) se vuelven a generar y sus archivos anteriores se envían a la papelera de Drive.` : ''}
       </div>
-      <button class="btn btn-primary btn-sm" style="width:100%;" data-action="prepararGuardadoMasivo" ${(driveOn && pendientes.length) ? '' : 'disabled style="opacity:.5"'}>📄 Generar todos los pendientes (${pendientes.length})</button>
+      <button class="btn btn-primary btn-sm" style="width:100%;" data-action="prepararGuardadoMasivo" ${(driveOn && todos.length) ? '' : 'disabled style="opacity:.5"'}>📄 ${yaGenerados ? 'Generar todos de nuevo' : 'Generar todos'} (${todos.length})</button>
       ${panel}
       <div class="status-line" id="status_${ID_MASIVO}"></div>
     </div>`;
@@ -1849,6 +1861,14 @@ function marcarCampo(grid, cambios, clave, valor, formato){
 // por defecto ("Equipo programado para mantenimiento preventivo", "Equipo en buen
 // estado físico y funcional."). Si el técnico escribe algo adicional, se agrega
 // DEBAJO de esa frase (no la reemplaza) — así nunca se pierde el texto original.
+// En correctivo y diagnóstico la frase por defecto del diagnóstico ("Equipo programado
+// para mantenimiento preventivo") no aplica: se borra y en su lugar va lo que escribió el técnico.
+function reemplazarCampo(grid, cambios, clave, valor){
+  const pos = CAMPOS_V7[clave];
+  if(!pos) return;
+  marcarCambio(grid, cambios, pos[0], pos[1], valor == null ? '' : String(valor));
+}
+
 function agregarCampoDebajo(grid, cambios, clave, valorAdicional){
   if(valorAdicional == null || valorAdicional === '') return;
   const pos = CAMPOS_V7[clave];
@@ -1960,7 +1980,11 @@ function calcularCambiosPlantilla(grid, equipo, cliente){
   marcarCampo(grid, cambios, 'serie', equipo.serie);
   marcarCampo(grid, cambios, 'modelo', equipo.modelo);
   marcarCampo(grid, cambios, 'codigo', equipo.codigo);
-  agregarCampoDebajo(grid, cambios, 'diagnostico', equipo.diagnostico);
+  if(equipo.tipoMantenimiento === 'Correctivo' || equipo.tipoMantenimiento === 'Diagnóstico'){
+    reemplazarCampo(grid, cambios, 'diagnostico', equipo.diagnostico);
+  }else{
+    agregarCampoDebajo(grid, cambios, 'diagnostico', equipo.diagnostico);
+  }
 
   if(CASILLAS_V7[equipo.tipoMantenimiento]) marcarCasilla(grid, cambios, equipo.tipoMantenimiento);
   if(equipo.claseFalla === 'Otro') marcarCasilla(grid, cambios, 'OtroFalla');
@@ -2257,6 +2281,34 @@ async function subirArchivoBinario(blob, filename, mimeType, parentId){
   });
   if(!res.ok) throw new Error('No se pudo subir el archivo Excel (HTTP ' + res.status + ')');
   return res.json();
+}
+
+// Archivos del informe anterior de este equipo: los que quedaron guardados la última vez
+// (ids recordados) y, para informes generados antes de esta versión, los que tengan el
+// mismo nombre en las mismas carpetas. Nunca incluye los archivos recién creados.
+async function archivosInformeAnterior(eq, nombre, carpetaPdfId, carpetaMesId, excluir){
+  const ids = new Map();
+  const prev = eq.informeArchivos || {};
+  [prev.pdfId, prev.xlsxId].filter(Boolean).forEach(id => ids.set(id, { id }));
+  const buscar = async (archivo, carpeta) => {
+    const q = "name = '" + archivo.replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "' and '" + carpeta + "' in parents and trashed = false";
+    const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&fields=files(id,name)&supportsAllDrives=true&includeItemsFromAllDrives=true', { headers: driveHeaders() });
+    if(!res.ok) return;
+    ((await res.json()).files || []).forEach(f => ids.set(f.id, f));
+  };
+  if(eq.informeOficialGenerado){
+    await buscar(nombre + '.pdf', carpetaPdfId);
+    await buscar(nombre + '.xlsx', carpetaMesId);
+  }
+  excluir.forEach(id => ids.delete(id));
+  return [...ids.values()];
+}
+
+async function enviarAPapelera(fileId){
+  const res = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?supportsAllDrives=true', {
+    method: 'PATCH', headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()), body: JSON.stringify({ trashed: true })
+  });
+  return res.ok;
 }
 
 async function eliminarArchivo(fileId){
@@ -2690,19 +2742,36 @@ async function asegurarEncabezadosHistorial(id){
   }catch(e){ /* no bloquea el registro */ }
 }
 
-async function registrarVisitaCliente(cliente, equipo, links){
+async function registrarVisitaCliente(cliente, equipo, links, urlsAnteriores){
   await upsertClienteEnBase(cliente);
   const id = await obtenerOCrearBaseClientes();
   await asegurarEncabezadosHistorial(id);
+  const fila = [
+    cliente.fecha, cliente.nombre, equipo.tipo, equipo.informeNo || '', links.excelUrl || '', links.pdfUrl || '',
+    equipo.marca || '', equipo.modelo || '', equipo.serie || '', equipo.codigo || '', equipo.ubicacion || '',
+    equipo.tipoMantenimiento || '', equipo.responsable || ''
+  ];
+
+  // Si el informe se generó de nuevo, se actualiza su fila (la que apuntaba a los
+  // archivos anteriores) en lugar de agregar una repetida.
+  if(urlsAnteriores && urlsAnteriores.length){
+    const enlaces = await leerRangoSheet(id, 'Historial!E2:F10000');
+    const idx = enlaces.findIndex(f => urlsAnteriores.includes(f[0]) || urlsAnteriores.includes(f[1]));
+    if(idx >= 0){
+      await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/' + encodeURIComponent('Historial!A' + (idx + 2) + ':M' + (idx + 2)) + '?valueInputOption=RAW', {
+        method: 'PUT',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
+        body: JSON.stringify({ values: [fila] })
+      });
+      clientesCache = null;
+      return;
+    }
+  }
 
   await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Historial!A:M:append?valueInputOption=RAW', {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
-    body: JSON.stringify({ values: [[
-      cliente.fecha, cliente.nombre, equipo.tipo, equipo.informeNo || '', links.excelUrl || '', links.pdfUrl || '',
-      equipo.marca || '', equipo.modelo || '', equipo.serie || '', equipo.codigo || '', equipo.ubicacion || '',
-      equipo.tipoMantenimiento || '', equipo.responsable || ''
-    ]] })
+    body: JSON.stringify({ values: [fila] })
   });
 
   clientesCache = null; // se recarga la próxima vez que se abra la base de clientes
@@ -2720,8 +2789,10 @@ async function obtenerNombreCarpeta(folderId){
 // "Reportes") y se muestra para que el técnico la confirme o elija otra.
 async function prepararGuardadoMasivo(){
   if(!state.driveToken){ showToast('Primero conecta tu cuenta de Google Drive.'); return; }
-  const pendientes = equiposPendientes();
-  if(!pendientes.length){ showToast('No quedan equipos pendientes por generar.'); return; }
+  const pendientes = equiposParaGenerarTodos();
+  if(!pendientes.length){ showToast('No hay equipos con plantilla oficial para generar.'); return; }
+  const repetidos = pendientes.filter(eq => eq.informeOficialGenerado).length;
+  if(repetidos && !confirm(repetidos + ' equipo(s) ya tienen informe generado. Se van a generar de nuevo y los PDF y Excel anteriores se enviarán a la papelera de Drive.\n\n¿Continuar?')) return;
   const sinNumero = pendientes.filter(eq => !eq.informeNo);
   if(sinNumero.length){
     if(!confirm(sinNumero.length + ' de ' + pendientes.length + ' equipo(s) no tienen "Informe No." — esos van a quedar sin ese número. ¿Continuar de todas formas?')) return;
@@ -2759,14 +2830,15 @@ async function confirmarGuardadoMasivo(){
     if(el2){ el2.textContent = msg; el2.className = 'status-line ' + (cls||''); }
   };
 
-  const pendientes = equiposPendientes();
+  const pendientes = equiposParaGenerarTodos();
   let ok = 0, fallidos = [];
   for(let i = 0; i < pendientes.length; i++){
     const eq = pendientes[i];
     setStatus(`Generando ${i+1} de ${pendientes.length}: ${eq.tipo}…`);
     try{
+      const fechaAntes = eq.informeOficialMarca;
       await generarInformeOficial(eq.id, folderId);
-      if(eq.informeOficialGenerado) ok++;
+      if(eq.informeOficialGenerado && eq.informeOficialMarca !== fechaAntes) ok++;
       else fallidos.push(eq.tipo);
     }catch(err){
       fallidos.push(eq.tipo);
@@ -2777,7 +2849,7 @@ async function confirmarGuardadoMasivo(){
   if(fallidos.length){
     setStatus(`✓ ${ok} generado(s). ✗ ${fallidos.length} con error: ${fallidos.join(', ')}`, 'err');
   }else{
-    setStatus(`✓ Los ${ok} informe(s) pendientes se generaron y guardaron en Drive.`, 'ok');
+    setStatus(`✓ Los ${ok} informe(s) se generaron y guardaron en Drive.`, 'ok');
   }
   showToast('Generación masiva terminada.');
 }
@@ -3062,17 +3134,28 @@ async function generarInformeOficial(id, folderId){
     // los archivos finales en la carpeta del cliente.
     await eliminarArchivo(sheetFile.id);
 
+    // Si este equipo ya tenía un informe generado, el PDF y el Excel anteriores se
+    // envían a la papelera de Drive (se pueden recuperar durante 30 días).
+    let anteriores = [];
+    try{
+      setStatus('Reemplazando el informe anterior…');
+      anteriores = await archivosInformeAnterior(eq, nombre, carpetaPdfId, carpetaMesId, [pdfFile.id, xlsxFile.id]);
+      for(const f of anteriores) await enviarAPapelera(f.id);
+    }catch(e){ /* si no se pudo limpiar, el informe nuevo igual quedó guardado */ }
+
     // Se registra la visita en la base de clientes; si esto falla no se pierde el
     // informe (ya quedó guardado arriba), solo no se refleja en la base.
     try{
       await registrarVisitaCliente(state.cliente, eq, {
         excelUrl: 'https://drive.google.com/file/d/' + xlsxFile.id + '/view',
         pdfUrl: 'https://drive.google.com/file/d/' + pdfFile.id + '/view'
-      });
+      }, anteriores.map(f => 'https://drive.google.com/file/d/' + f.id + '/view'));
     }catch(e){ /* no bloquea el flujo principal */ }
 
+    eq.informeArchivos = { pdfId: pdfFile.id, xlsxId: xlsxFile.id, carpetaPdfId, carpetaMesId };
     eq.informeOficialGenerado = true;
     eq.informeOficialFecha = todayISO();
+    eq.informeOficialMarca = Date.now();
     saveState();
     render();
 
