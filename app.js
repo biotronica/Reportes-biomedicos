@@ -1207,7 +1207,7 @@ async function generarActaEntrega(saludoElegido){
       let paso = 'buscando la carpeta del cliente';
       try{
         setStatus('Subiendo a Drive…');
-        const folderId = await encontrarOCrearCarpetaCliente(state.cliente.nombre);
+        const folderId = await carpetaClienteParaActa();
         paso = 'creando/abriendo "Entrega documentos"';
         const carpetaEntregaDocsId = await encontrarOCrearSubcarpeta(folderId, 'Entrega documentos');
         const carpetaEntregaAnioId = await encontrarOCrearSubcarpeta(carpetaEntregaDocsId, String(new Date().getFullYear()));
@@ -2106,7 +2106,17 @@ async function encontrarOCrearSubcarpeta(carpetaPadreId, nombreSubcarpeta){
   });
   if(!res.ok) throw new Error('No se pudo buscar la subcarpeta "' + nombreSubcarpeta + '" (HTTP ' + res.status + ')');
   const data = await res.json();
-  const existente = (data.files || [])[0];
+  let existente = (data.files || [])[0];
+  if(!existente){
+    // Respaldo: mismo nombre sin importar mayúsculas, tildes o espacios de más
+    // (ej. "Entrega Documentos" = "Entrega documentos").
+    const q2 = "mimeType = 'application/vnd.google-apps.folder' and '" + carpetaPadreId + "' in parents and trashed = false";
+    const res2 = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q2) + '&pageSize=1000&fields=files(id,name)', { headers: driveHeaders() });
+    if(res2.ok){
+      const d2 = await res2.json();
+      existente = (d2.files || []).find(f => normNombre(f.name) === normNombre(nombreSubcarpeta));
+    }
+  }
   if(existente){
     cacheSubcarpetas[clave] = existente.id;
     return existente.id;
@@ -2948,9 +2958,22 @@ function filasCarpetasHtml(equipoId, filtro){
     </div>`).join('');
 }
 
+// La carpeta del cliente donde se guardaron los informes se recuerda para esta visita:
+// el acta de entrega se guarda en esa misma carpeta, sin volver a preguntar dónde.
+function recordarCarpetaCliente(folderId){
+  state.carpetaCliente = { nombre: normNombre(state.cliente.nombre), id: folderId };
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.assign({}, state, { driveToken: null }))); }catch(e){}
+}
+async function carpetaClienteParaActa(){
+  const rec = state.carpetaCliente;
+  if(rec && rec.id && rec.nombre === normNombre(state.cliente.nombre)) return rec.id;
+  return encontrarOCrearCarpetaCliente(state.cliente.nombre);
+}
+
 async function generarInformeOficial(id, folderId){
   const eq = state.equipos.find(e => e.id === id);
   if(!eq) return;
+  recordarCarpetaCliente(folderId);
   const templateId = TEMPLATE_FILE_IDS[eq.tipo];
   const statusEl = document.getElementById('status_' + id);
   const setStatus = (msg, cls) => { if(statusEl){ statusEl.textContent = msg; statusEl.className = 'status-line ' + (cls || ''); } };
