@@ -31,7 +31,7 @@ function defaultCliente(){
 function defaultDraft(){
   return {
     id: uid(), tipo:'', marca:'', modelo:'', serie:'', codigo:'', ubicacion:'', informeNo:'',
-    tipoMantenimiento:'Preventivo', claseFalla:'', diagnostico:'',
+    tipoMantenimiento:'', claseFalla:'', diagnostico:'',
     procedimientosAdicionales:'', limpiezaInterior:true, limpiezaExterior:true, fueraDeServicio:false,
     observaciones:'', repuestos:'', responsable:'', recibeSatisfaccion:''
   };
@@ -252,6 +252,111 @@ function goTo(screen){
   window.scrollTo(0,0);
 }
 
+/* ============== CONSECUTIVO DE INFORMES ============== */
+// state.consecutivo = { ultimo: 9047, sufijo: '26' } -> el siguiente es "9048-26".
+function parseInformeNo(txt){
+  const m = /^\s*(\d+)\s*[-–—]\s*(\d+)\s*$/.exec(String(txt || ''));
+  return m ? { numero: parseInt(m[1], 10), sufijo: m[2] } : null;
+}
+function ymVisita(){
+  const f = (state.cliente && state.cliente.fecha) || todayISO();
+  const m = /^(\d{4})-(\d{2})/.exec(f);
+  return m ? m[1].slice(2) + m[2] : todayISO().slice(2, 4) + todayISO().slice(5, 7);
+}
+// Correctivo "C-261001" y Diagnóstico "D-261001": letra + AA + MM + consecutivo del mes (01, 02, ...).
+function parseInformeCD(txt){
+  const m = /^\s*([CD])-(\d{4})(\d{2,})\s*$/i.exec(String(txt || ''));
+  return m ? { letra: m[1].toUpperCase(), ym: m[2], n: parseInt(m[3], 10) } : null;
+}
+function siguienteInformeCD(letra){
+  const ym = ymVisita();
+  const clave = letra + '-' + ym;
+  // Octubre 2026: correctivo ya va en 02 (arranca en 03); diagnóstico arranca en 01.
+  const SEMILLA = { 'C-2610': 2 };
+  let n = Math.max((state.consecutivo && state.consecutivo.mensual && state.consecutivo.mensual[clave]) || 0, SEMILLA[clave] || 0);
+  (state.equipos || []).forEach(e => { const p = parseInformeCD(e.informeNo); if(p && p.letra === letra && p.ym === ym && p.n > n) n = p.n; });
+  return letra + '-' + ym + String(n + 1).padStart(2, '0');
+}
+// Número que corresponde según el tipo de mantenimiento elegido ('' si aún no hay o no aplica).
+function informeNoParaTipo(tipo){
+  if(tipo === 'Preventivo') return siguienteInformeNo();
+  if(tipo === 'Correctivo') return siguienteInformeCD('C');
+  if(tipo === 'Diagnóstico') return siguienteInformeCD('D');
+  return '';
+}
+function siguienteInformeNo(){
+  let c = state.consecutivo;
+  if(!c || !c.ultimo){
+    // sin consecutivo guardado: se toma el mayor número de los equipos de esta visita
+    let mejor = null;
+    (state.equipos || []).forEach(e => { const p = parseInformeNo(e.informeNo); if(p && (!mejor || p.numero > mejor.numero)) mejor = p; });
+    if(!mejor) return '';
+    c = { ultimo: mejor.numero, sufijo: mejor.sufijo };
+  }
+  return (c.ultimo + 2) + '-' + c.sufijo; // impares siguen con impares y pares con pares (de 2 en 2)
+}
+function registrarConsecutivo(informeNo){
+  const cd = parseInformeCD(informeNo);
+  if(cd){
+    const c = Object.assign({}, state.consecutivo || {});
+    c.mensual = Object.assign({}, c.mensual || {});
+    const clave = cd.letra + '-' + cd.ym;
+    c.mensual[clave] = Math.max(c.mensual[clave] || 0, cd.n);
+    state.consecutivo = c;
+    return;
+  }
+  const p = parseInformeNo(informeNo);
+  if(!p) return;
+  const prev = state.consecutivo || {};
+  const max = Object.assign({}, prev.max || {});
+  max[p.numero % 2] = p.numero;
+  state.consecutivo = { ultimo: p.numero, sufijo: p.sufijo, max, mensual: prev.mensual || {} };
+}
+// Une el consecutivo remoto (otro dispositivo): por cada paridad se toma el mayor, y la
+// línea propia (par o impar, según el último número usado aquí) continúa desde su mayor.
+function fusionarConsecutivoRemoto(remoto){
+  if(!remoto) return;
+  const local = state.consecutivo || {};
+  // contadores mensuales de correctivos/diagnósticos: el mayor de cada mes
+  const mensual = Object.assign({}, remoto.mensual || {});
+  Object.keys(local.mensual || {}).forEach(k => { if(!(mensual[k] > local.mensual[k])) mensual[k] = local.mensual[k]; });
+  if(!remoto.ultimo){ state.consecutivo = Object.assign({}, local, { mensual }); return; }
+  if(!local.ultimo){ state.consecutivo = Object.assign({}, remoto, { mensual }); return; }
+  const max = Object.assign({}, remoto.max || {}, local.max || {});
+  [0, 1].forEach(par => {
+    const r = remoto.max && remoto.max[par];
+    if(r && (!max[par] || r > max[par])) max[par] = r;
+  });
+  const miParidad = local.ultimo % 2;
+  state.consecutivo = { ultimo: Math.max(local.ultimo, max[miParidad] || 0), sufijo: local.sufijo, max, mensual };
+}
+function cambiarNumeroInforme(){
+  const d = state.draft;
+  if(!d) return;
+  const nuevo = prompt('Nuevo número de informe (ej: 9100-26).\nDesde este número seguirá el consecutivo.', d.informeNo || '');
+  if(nuevo === null) return;
+  const limpio = nuevo.trim();
+  if(!limpio){ showToast('Escribe el número.'); return; }
+  if(!parseInformeNo(limpio) && !parseInformeCD(limpio) && !confirm('"' + limpio + '" no tiene el formato 0000-26 ni C-261001, así que no se podrá continuar el consecutivo desde él.\n\n¿Usarlo de todas formas?')) return;
+  const anterior = d.informeNo;
+  d.informeNo = limpio;
+  d.numeroCambiado = true;
+  saveState();
+  render();
+  if(anterior && anterior !== limpio && !d.obsConsecutivo){
+    editarObservacionConsecutivo();
+  }
+}
+function editarObservacionConsecutivo(){
+  const d = state.draft;
+  if(!d) return;
+  const obs = prompt('Observación interna: ¿por qué se interrumpe el consecutivo?\n(Solo para uso interno, no va en el reporte.)', d.obsConsecutivo || '');
+  if(obs === null) return;
+  d.obsConsecutivo = obs.trim();
+  saveState();
+  render();
+}
+
 function startNewEquipo(){
   state.draft = defaultDraft();
   state.editingId = null;
@@ -269,6 +374,7 @@ function editEquipo(id){
 function saveDraft(){
   const d = state.draft;
   if(!d.tipo){ showToast('Selecciona el tipo de equipo antes de guardar.'); return; }
+  if(!d.tipoMantenimiento){ showToast('Selecciona el tipo de mantenimiento antes de guardar.'); return; }
   if(!d.marca && !d.serie && !d.codigo){ showToast('Agrega al menos marca, serie o código interno.'); return; }
   if(state.editingId){
     const idx = state.equipos.findIndex(e => e.id === state.editingId);
@@ -276,6 +382,9 @@ function saveDraft(){
   }else{
     state.equipos.push(d);
   }
+  // El consecutivo sigue desde el número que quedó guardado (nuevo equipo o número cambiado).
+  if(!state.editingId || d.numeroCambiado) registrarConsecutivo(d.informeNo);
+  d.numeroCambiado = false;
   state.draft = null;
   state.editingId = null;
   saveState();
@@ -426,6 +535,30 @@ function pickClienteExistente(nombre){
   render();
 }
 
+function informeNoHtml(d){
+  const t = d.tipoMantenimiento;
+  const auto = (t === 'Correctivo' || t === 'Diagnóstico') || (t === 'Preventivo' && (!!d.informeNo));
+  let input, etiqueta = '';
+  if(!t){
+    input = `<input type="text" id="fld_draft_informeNo" value="" readonly placeholder="Se asigna al elegir el tipo de mantenimiento" style="background:#EEF3F7;">`;
+  }else if(auto){
+    etiqueta = '(consecutivo automático)';
+    input = `<input type="text" id="fld_draft_informeNo" data-path="draft.informeNo" value="${escapeHtml(d.informeNo)}" readonly style="font-weight:700;background:#EEF3F7;">`;
+  }else{
+    input = `<input type="text" id="fld_draft_informeNo" data-path="draft.informeNo" value="${escapeHtml(d.informeNo)}" placeholder="Informe No. (ej: 9048-26)">`;
+  }
+  return `
+    <div class="field">
+      <label>Informe No. ${etiqueta}</label>
+      <div class="field-input-row">${input}</div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <button type="button" class="btn btn-outline btn-sm" style="flex:1;" data-action="cambiarNumeroInforme">✏️ Cambiar número</button>
+        <button type="button" class="btn btn-outline btn-sm" style="flex:1;" data-action="editarObservacionConsecutivo">📝 Observación</button>
+      </div>
+      ${d.obsConsecutivo ? `<div class="status-line" style="text-align:left;">📝 Interno: ${escapeHtml(d.obsConsecutivo)}</div>` : ''}
+    </div>`;
+}
+
 function fieldMicHtml(path, value, label, isTextarea, targetIdOverride){
   const targetId = targetIdOverride || ('fld_' + path.replace(/\./g,'_'));
   const inputHtml = isTextarea
@@ -520,7 +653,7 @@ function renderFormEquipo(){
 
       <div class="card">
         <div class="card-title">🏷️ Identificación del equipo</div>
-        ${fieldMicHtml('draft.informeNo', d.informeNo, 'Informe No.', false)}
+        ${informeNoHtml(d)}
         ${fieldMicHtml('draft.marca', d.marca, 'Marca', false)}
         ${fieldMicHtml('draft.modelo', d.modelo, 'Modelo', false)}
         ${fieldMicHtml('draft.serie', d.serie, 'Número de serie', false)}
@@ -551,7 +684,7 @@ function renderFormEquipo(){
 
       <div class="card">
         <div class="card-title">✅ Procedimientos adicionales</div>
-        <div class="status-line">La plantilla oficial ya incluye los procedimientos estándar de este equipo. Escribe aquí solo si hiciste algo adicional a lo ya incluido (uno por línea).</div>
+        <div class="status-line">${(d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') ? 'En correctivo y diagnóstico NO se imprimen los procedimientos estándar: en el informe solo aparece lo que escribas aquí (uno por línea).' : 'La plantilla oficial ya incluye los procedimientos estándar de este equipo. Escribe aquí solo si hiciste algo adicional a lo ya incluido (uno por línea).'}</div>
         ${fieldMicHtml('draft.procedimientosAdicionales', d.procedimientosAdicionales, 'Procedimientos adicionales (opcional)', true)}
       </div>
 
@@ -1720,13 +1853,27 @@ function agregarObservacionesAdicionales(grid, cambios, textoAdicional, mantener
 // procedimientos realizados:") y agrega ahí, en las filas siguientes, cualquier
 // procedimiento adicional que el técnico haya escrito (uno por línea). No toca ni
 // reescribe los procedimientos que ya vienen impresos en la plantilla.
-function agregarProcedimientosAdicionales(grid, cambios, textoAdicional){
+function agregarProcedimientosAdicionales(grid, cambios, textoAdicional, reemplazarEstandar){
   const lineas = String(textoAdicional || '').split('\n').map(l => l.trim()).filter(Boolean);
-  if(!lineas.length) return;
-
   const label = findCellsWithText(grid, 'Descripción de los procedimientos realizados:')[0];
   if(!label) return;
 
+  if(reemplazarEstandar){
+    // Correctivo / Diagnóstico: se borran los procedimientos estándar impresos en la plantilla
+    // y solo se escribe lo que el técnico puso en "procedimientos adicionales".
+    const obs = findCellsWithText(grid, 'OBSERVACIONES')[0];
+    const finCaja = obs ? obs.r : label.r + 1 + 12;
+    const primera = label.r + 1;
+    for(let r = primera; r < finCaja; r++){
+      if(grid.filas[r] && normText(grid.filas[r][label.c])) marcarCambio(grid, cambios, r, label.c, '');
+    }
+    const capacidad = Math.max(1, finCaja - primera);
+    const salida = lineas.length <= capacidad ? lineas : lineas.slice(0, capacidad - 1).concat(lineas.slice(capacidad - 1).join(' '));
+    salida.forEach((linea, i) => { if(linea) marcarCambio(grid, cambios, primera + i, label.c, linea); });
+    return;
+  }
+
+  if(!lineas.length) return;
   const LIMITE_FILAS = 60; // resguardo para no recorrer la hoja entera si algo no calza
   let r = label.r + 1;
   let vueltas = 0;
@@ -1763,7 +1910,7 @@ function calcularCambiosPlantilla(grid, equipo, cliente){
   marcarCasilla(grid, cambios, equipo.limpiezaInterior ? 'InteriorSI' : 'InteriorNO');
   marcarCasilla(grid, cambios, equipo.limpiezaExterior ? 'ExteriorSI' : 'ExteriorNO');
 
-  agregarProcedimientosAdicionales(grid, cambios, equipo.procedimientosAdicionales);
+  agregarProcedimientosAdicionales(grid, cambios, equipo.procedimientosAdicionales, equipo.tipoMantenimiento === 'Correctivo' || equipo.tipoMantenimiento === 'Diagnóstico');
 
   agregarObservacionesAdicionales(grid, cambios, equipo.observaciones, equipo._mantenerObservacionFija);
   marcarCampo(grid, cambios, 'responsable', equipo.responsable);
@@ -2087,7 +2234,7 @@ async function obtenerOCrearArchivoSesion(){
 async function empujarEstadoADrive(){
   if(!state.driveToken) return;
   const id = await obtenerOCrearArchivoSesion();
-  const payload = { cliente: state.cliente, equipos: state.equipos, actualizadoEn: Date.now() };
+  const payload = { cliente: state.cliente, equipos: state.equipos, consecutivo: state.consecutivo || null, actualizadoEn: Date.now() };
   await fetch('https://www.googleapis.com/upload/drive/v3/files/' + id + '?uploadType=media', {
     method: 'PATCH',
     headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
@@ -2187,6 +2334,11 @@ async function revisarSincronizacionRemota(){
     const remoto = await traerEstadoDeDrive();
     const remotoTs = remoto.actualizadoEn || 0;
     const localTs = state._localUpdatedAt || 0;
+    // El consecutivo de informes se comparte entre dispositivos: 
+    if(remoto.consecutivo){
+      fusionarConsecutivoRemoto(remoto.consecutivo);
+      saveState();
+    }
     const remotoTieneAlgo = (remoto.cliente && remoto.cliente.nombre) || (remoto.equipos && remoto.equipos.length);
     // Si hay una visita en curso más reciente (de este dispositivo o de otro), se
     // pregunta al entrar si se quiere continuar con esos equipos o empezar una
@@ -2446,39 +2598,14 @@ async function upsertClienteEnBase(cliente){
   clientesCache = null; // se vuelve a cargar la próxima vez que haga falta
 }
 
-// Columnas G-M del Historial: datos del equipo que usa la Plataforma Biomédica para
-// armar el historial por equipo y calcular el próximo mantenimiento.
-const HISTORIAL_COLUMNAS_EXTRA = ['Marca', 'Modelo', 'Serie', 'Código', 'Ubicación', 'Tipo mantenimiento', 'Responsable'];
-let encabezadosExtraListos = false;
-
-async function asegurarEncabezadosHistorial(id){
-  if(encabezadosExtraListos) return;
-  try{
-    const actuales = await leerRangoSheet(id, 'Historial!G1:M1');
-    if(!(actuales[0] && actuales[0][2] === 'Serie')){
-      await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Historial!G1:M1?valueInputOption=RAW', {
-        method: 'PUT',
-        headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
-        body: JSON.stringify({ values: [HISTORIAL_COLUMNAS_EXTRA] })
-      });
-    }
-    encabezadosExtraListos = true;
-  }catch(e){ /* no bloquea el registro */ }
-}
-
 async function registrarVisitaCliente(cliente, equipo, links){
   await upsertClienteEnBase(cliente);
   const id = await obtenerOCrearBaseClientes();
-  await asegurarEncabezadosHistorial(id);
 
-  await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Historial!A:M:append?valueInputOption=RAW', {
+  await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Historial!A:F:append?valueInputOption=RAW', {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
-    body: JSON.stringify({ values: [[
-      cliente.fecha, cliente.nombre, equipo.tipo, equipo.informeNo || '', links.excelUrl || '', links.pdfUrl || '',
-      equipo.marca || '', equipo.modelo || '', equipo.serie || '', equipo.codigo || '', equipo.ubicacion || '',
-      equipo.tipoMantenimiento || '', equipo.responsable || ''
-    ]] })
+    body: JSON.stringify({ values: [[cliente.fecha, cliente.nombre, equipo.tipo, equipo.informeNo || '', links.excelUrl || '', links.pdfUrl || '']] })
   });
 
   clientesCache = null; // se recarga la próxima vez que se abra la base de clientes
@@ -2798,7 +2925,11 @@ async function generarInformeOficial(id, folderId){
     // Impares -> "Ramiro", pares -> "Evelyn" (según el número de informe). Si no se
     // escribió número, se usa "Ramiro" por defecto (ya se avisó antes de llegar aquí).
     const carpetaReportesId = await encontrarOCrearSubcarpeta(folderId, 'Reportes');
-    const nombreSubcarpetaTecnico = numeroReporteEsImpar(eq.informeNo) ? 'Ramiro' : 'Evelyn';
+    // Preventivos: impar -> Ramiro, par -> Evelyn. Correctivo/Diagnóstico (C-/D-) no llevan
+    // consecutivo por persona: la carpeta sale del responsable de ejecución (Ramiro por defecto).
+    const nombreSubcarpetaTecnico = parseInformeCD(eq.informeNo)
+      ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
+      : (numeroReporteEsImpar(eq.informeNo) ? 'Ramiro' : 'Evelyn');
     const carpetaTecnicoId = await encontrarOCrearSubcarpeta(carpetaReportesId, nombreSubcarpetaTecnico);
 
     // Dentro de Ramiro/Evelyn, los archivos se organizan por año y luego por mes
@@ -3015,6 +3146,8 @@ function onAppClick(e){
     case 'iniciarOtroCliente': iniciarOtroCliente(); break;
     case 'editEquipo': editEquipo(id); break;
     case 'saveDraft': saveDraft(); break;
+    case 'cambiarNumeroInforme': cambiarNumeroInforme(); break;
+    case 'editarObservacionConsecutivo': editarObservacionConsecutivo(); break;
     case 'cancelForm': cancelForm(); break;
     case 'deleteDraftEquipo': deleteDraftEquipo(); break;
     case 'crearPin': crearPin(); break;
@@ -3027,6 +3160,10 @@ function onAppClick(e){
     case 'setChoice': {
       const v = isBool ? (value === 'true') : value;
       setPath(path, v);
+      if(path === 'draft.tipoMantenimiento' && state.draft && !state.editingId && !state.draft.numeroCambiado){
+        state.draft.informeNo = informeNoParaTipo(v);
+        saveState();
+      }
       render();
       break;
     }
