@@ -595,6 +595,7 @@ function renderEquipos(){
         <div class="equipo-info">
           <div class="equipo-nombre">${escapeHtml(eq.tipo || 'Equipo sin tipo')}</div>
           <div class="equipo-meta">${escapeHtml(eq.marca||'—')} ${escapeHtml(eq.modelo||'')} · ${escapeHtml(eq.ubicacion||'sin ubicación')}</div>
+          <div class="equipo-meta equipo-ids">N.º <b>${escapeHtml(eq.informeNo||'—')}</b> · S/N ${escapeHtml(eq.serie||'—')} · Cód. ${escapeHtml(eq.codigo||'—')}</div>
         </div>
         <div class="equipo-chevron">›</div>
       </div>`).join('')
