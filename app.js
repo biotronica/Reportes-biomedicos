@@ -3188,6 +3188,7 @@ function initGoogle(){
       if(resp.error){ showToast('No se pudo conectar con Google Drive.'); return; }
       state.driveToken = resp.access_token;
       state.driveExpiry = Date.now() + ((resp.expires_in||3500)*1000);
+      try{ sessionStorage.setItem('rep_tok', JSON.stringify({ tok: state.driveToken, exp: state.driveExpiry })); }catch(e){}
       render();
       showToast('Conectado a Google Drive.');
       revisarSincronizacionRemota();
@@ -3400,5 +3401,27 @@ if('serviceWorker' in navigator){
     navigator.serviceWorker.register('sw.js').catch(()=>{});
   });
 }
+// Conexión a Drive heredada de la Plataforma Biomédica: al abrir Reportes desde la Plataforma
+// llega el permiso en el #fragmento de la dirección, así no hay que volver a conectar aquí.
+// Se guarda solo en esta pestaña (sessionStorage) y se borra de la dirección enseguida.
+function tomarConexionDePlataforma(){
+  try{
+    const h = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    const tok = h.get('tok'), exp = Number(h.get('exp'));
+    if(tok && exp > Date.now()){
+      sessionStorage.setItem('rep_tok', JSON.stringify({ tok, exp }));
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+    const g = JSON.parse(sessionStorage.getItem('rep_tok') || 'null');
+    if(g && g.tok && g.exp > Date.now() + 60000){
+      state.driveToken = g.tok;
+      state.driveExpiry = g.exp;
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+const conexionHeredada = tomarConexionDePlataforma();
 initGoogle();
 render();
+if(conexionHeredada){ setTimeout(() => { revisarSincronizacionRemota().catch(()=>{}); }, 300); }
