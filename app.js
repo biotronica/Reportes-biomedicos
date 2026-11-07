@@ -19,8 +19,31 @@ const CONFIG = {
   DRIVE_SCOPE: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/spreadsheets'
 };
 
+/* ============== MODO PRUEBAS ==============
+   Si la Plataforma Biomédica está en "modo pruebas", abre Reportes con ?pruebas=1. Entonces todo
+   (carpetas de clientes, reportes, Base de Clientes e historial) va a la carpeta
+   "MANTENIMIENTOS - PRUEBAS" y el progreso local se guarda aparte: los datos reales no se tocan. */
+const PRUEBAS_FOLDER_ID = '1GLTPESsQc6Y1aHETQlzhKs92_TD9Bp12';
+const MODO_PRUEBAS = (() => {
+  try{
+    if(new URLSearchParams(location.search).get('pruebas') === '1') sessionStorage.setItem('rep_pruebas', '1');
+    return sessionStorage.getItem('rep_pruebas') === '1';
+  }catch(e){ return false; }
+})();
+if(MODO_PRUEBAS){
+  CONFIG.MANTENIMIENTOS_FOLDER_ID = PRUEBAS_FOLDER_ID;
+  CONFIG.DRIVE_FOLDER_ID = PRUEBAS_FOLDER_ID;
+  document.addEventListener('DOMContentLoaded', () => {
+    const b = document.createElement('div');
+    b.className = 'banner-pruebas';
+    b.textContent = '🧪 MODO PRUEBAS — los reportes van a MANTENIMIENTOS - PRUEBAS (no son reales)';
+    document.body.prepend(b);
+    document.title = '🧪 PRUEBAS · ' + document.title;
+  });
+}
+
 /* ============== ESTADO ============== */
-const STORAGE_KEY = 'reportes_intelmedica_state_v1';
+const STORAGE_KEY = MODO_PRUEBAS ? 'reportes_intelmedica_state_pruebas' : 'reportes_intelmedica_state_v1';
 
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 
