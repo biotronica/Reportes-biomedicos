@@ -115,7 +115,11 @@ function saveState(){
 function getPath(path){
   return path.split('.').reduce((o,p)=> (o==null? o : o[p]), state);
 }
+// Campos que siempre se escriben en MAYÚSCULAS (al teclear, al dictar o al elegir de la base de clientes).
+const CAMPOS_MAYUS = new Set(['cliente.nombre', 'cliente.solicitante']);
+const aMayus = v => String(v == null ? '' : v).toLocaleUpperCase('es-CO');
 function setPath(path, value){
+  if(CAMPOS_MAYUS.has(path)) value = aMayus(value);
   const parts = path.split('.');
   let obj = state;
   for(let i=0;i<parts.length-1;i++){ obj = obj[parts[i]]; }
@@ -241,7 +245,7 @@ function appendDictatedText(path, targetId, text){
   updated = updated.charAt(0).toUpperCase() + updated.slice(1);
   setPath(path, updated);
   const el = document.getElementById(targetId);
-  if(el) el.value = updated;
+  if(el) el.value = getPath(path);
   saveState();
 }
 
@@ -529,7 +533,7 @@ function confirmarCambioClienteSiHaceFalta(nombreAnterior, nombreNuevo){
 
 function pickClienteExistente(nombre){
   if(!confirmarCambioClienteSiHaceFalta(state.cliente.nombre, nombre)) return;
-  state.cliente.nombre = nombre;
+  state.cliente.nombre = aMayus(nombre);
   state.cliente.solicitante = '';
   state.cliente.personaCargo = '';
   state.cliente.contacto = '';
@@ -3208,7 +3212,7 @@ async function manejarNombreClienteIngresado(nombre){
     const existente = clientesCache.clientes.find(c => normNombre(c.nombre) === normNombre(nombre));
     if(existente){
       let cambiado = false;
-      if(!state.cliente.solicitante && existente.solicitante){ state.cliente.solicitante = existente.solicitante; cambiado = true; }
+      if(!state.cliente.solicitante && existente.solicitante){ state.cliente.solicitante = aMayus(existente.solicitante); cambiado = true; }
       if(!state.cliente.personaCargo && existente.personaCargo){ state.cliente.personaCargo = existente.personaCargo; cambiado = true; }
       if(!state.cliente.contacto && existente.contacto){ state.cliente.contacto = existente.contacto; cambiado = true; }
       if(cambiado){
@@ -3244,6 +3248,11 @@ function wireCommonHandlers(){
   app.querySelectorAll('[data-path]').forEach(elm => {
     if(elm.tagName === 'INPUT' || elm.tagName === 'TEXTAREA'){
       elm.addEventListener('input', () => {
+        if(CAMPOS_MAYUS.has(elm.dataset.path) && elm.value !== aMayus(elm.value)){
+          const a = elm.selectionStart, b = elm.selectionEnd;
+          elm.value = aMayus(elm.value);
+          try{ elm.setSelectionRange(a, b); }catch(e){}
+        }
         setPath(elm.dataset.path, elm.value);
       });
       elm.addEventListener('blur', saveState);
