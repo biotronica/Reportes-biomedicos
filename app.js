@@ -570,7 +570,7 @@ function fieldMicHtml(path, value, label, isTextarea, targetIdOverride){
   const targetId = targetIdOverride || ('fld_' + path.replace(/\./g,'_'));
   const inputHtml = isTextarea
     ? `<textarea id="${targetId}" data-path="${path}" placeholder="${escapeHtml(label)}">${escapeHtml(value)}</textarea>`
-    : `<input type="text" id="${targetId}" data-path="${path}" value="${escapeHtml(value)}" placeholder="${escapeHtml(label)}">`;
+    : `<input type="text" id="${targetId}" data-path="${path}" value="${escapeHtml(value)}" placeholder="${escapeHtml(label)}"${CAMPOS_MAYUS.has(path) ? ' autocapitalize="characters" style="text-transform:uppercase"' : ''}>`;
   return `
     <div class="field">
       <label>${escapeHtml(label)}</label>

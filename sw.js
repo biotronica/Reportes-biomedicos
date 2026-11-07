@@ -1,4 +1,4 @@
-const CACHE_NAME = 'reportes-intelmedica-v2';
+const CACHE_NAME = 'reportes-intelmedica-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -27,11 +27,12 @@ self.addEventListener('activate', (event) => {
 // próxima vez que se abre la app, sin tener que borrar caché ni reinstalar nada.
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin) {
+  if (url.origin !== self.location.origin || event.request.method !== 'GET') {
     return;
   }
   event.respondWith(
-    fetch(event.request).then((response) => {
+    // cache:'no-store' → nunca usa la copia del navegador (GitHub la guarda hasta 10 min).
+    fetch(event.request.url, { cache: 'no-store' }).then((response) => {
       const clone = response.clone();
       caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
       return response;
