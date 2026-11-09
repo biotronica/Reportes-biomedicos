@@ -141,6 +141,15 @@ function getPath(path){
 // Campos que siempre se escriben en MAYÚSCULAS (al teclear, al dictar o al elegir de la base de clientes).
 const CAMPOS_MAYUS = new Set(['cliente.nombre', 'cliente.solicitante']);
 const aMayus = v => String(v == null ? '' : v).toLocaleUpperCase('es-CO');
+// Tipo de sociedad con sus puntos: SA → S.A., SAS → S.A.S., LTDA → LTDA. (también "S A", "S.A", "Ltda").
+// Se aplica al salir del campo del cliente (no mientras se escribe, para no estorbar palabras como "SAN").
+function puntosSociedad(v){
+  return aMayus(v)
+    .replace(/(^|[\s,])S\s*\.?\s*A\s*\.?\s*S\s*\.?(?=[\s,]|$)/g, '$1S.A.S.')
+    .replace(/(^|[\s,])S\s*\.?\s*A\s*\.?(?=[\s,]|$)/g, '$1S.A.')
+    .replace(/(^|[\s,])LTDA\s*\.?(?=[\s,]|$)/g, '$1LTDA.')
+    .replace(/\s+/g, ' ').trim();
+}
 function setPath(path, value){
   if(CAMPOS_MAYUS.has(path)) value = aMayus(value);
   const parts = path.split('.');
@@ -266,7 +275,7 @@ function appendDictatedText(path, targetId, text){
   const current = (getPath(path) || '').toString();
   let updated = current.trim() ? (current.trim() + ' ' + text) : text;
   updated = updated.charAt(0).toUpperCase() + updated.slice(1);
-  setPath(path, updated);
+  setPath(path, path === 'cliente.nombre' ? puntosSociedad(updated) : updated);
   const el = document.getElementById(targetId);
   if(el) el.value = getPath(path);
   saveState();
@@ -556,7 +565,7 @@ function confirmarCambioClienteSiHaceFalta(nombreAnterior, nombreNuevo){
 
 function pickClienteExistente(nombre){
   if(!confirmarCambioClienteSiHaceFalta(state.cliente.nombre, nombre)) return;
-  state.cliente.nombre = aMayus(nombre);
+  state.cliente.nombre = puntosSociedad(nombre);
   state.cliente.solicitante = '';
   state.cliente.personaCargo = '';
   state.cliente.contacto = '';
@@ -2070,6 +2079,7 @@ async function aplicarCambiosEnSheet(spreadsheetId, sheetId, cambios){
 function normNombre(s){
   return String(s || '')
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[.,]/g, '')                 // "S.A." = "SA", "LTDA." = "LTDA"
     .trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
@@ -3279,7 +3289,13 @@ function wireCommonHandlers(){
         }
         setPath(elm.dataset.path, elm.value);
       });
-      elm.addEventListener('blur', saveState);
+      elm.addEventListener('blur', () => {
+        if(elm.dataset.path === 'cliente.nombre'){
+          const v = puntosSociedad(elm.value);
+          if(v !== elm.value){ elm.value = v; setPath('cliente.nombre', v); }
+        }
+        saveState();
+      });
     }
   });
 
