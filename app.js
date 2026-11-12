@@ -502,6 +502,15 @@ function render(){
   else if(state.screen === 'formEquipo') app.appendChild(renderFormEquipo());
   else if(state.screen === 'exportar') app.appendChild(renderExportar());
   else if(state.screen === 'clientes') app.appendChild(renderClientes());
+  // Versión visible arriba en todas las pantallas, para confirmar que llegó la actualización
+  const tb = app.querySelector('.topbar');
+  if(tb){
+    const v = document.createElement('div');
+    v.className = 'app-version';
+    v.textContent = 'Reportes Intelmedica · v' + APP_VERSION;
+    v.style.cssText = 'font-size:11px;font-weight:600;opacity:.85;text-align:right;margin:-4px 0 4px;letter-spacing:.2px;';
+    tb.insertBefore(v, tb.firstChild);
+  }
   wireCommonHandlers();
   saveState();
 }
@@ -532,7 +541,7 @@ function renderCliente(){
       <div class="topbar-row">
         <div>
           <div class="topbar-title">Datos del cliente</div>
-          <div class="topbar-sub">Se piden una sola vez por visita · v${APP_VERSION}</div>
+          <div class="topbar-sub">Se piden una sola vez por visita</div>
         </div>
       </div>
       <div class="step-pills">${stepPills('cliente')}</div>
@@ -2298,7 +2307,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.12-c';
+const APP_VERSION = '2026.11.12-d';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
