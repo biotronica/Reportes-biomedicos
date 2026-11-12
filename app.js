@@ -2024,6 +2024,45 @@ function agregarCampoDebajo(grid, cambios, clave, valorAdicional){
 // "Observaciones": si una línea de texto no cabe completa en el ancho de la fila, se
 // corta ahí y sigue en la fila de abajo — igual que si se estuviera escribiendo a
 // mano en las líneas impresas del formato.
+// Ancho útil de la fila B:S de la plantilla (Arial 10): ~107,7 unidades de Excel ≈ 750 px.
+// Se deja un margen para que la última palabra nunca quede cortada en el borde.
+const ANCHO_FILA_PX = 725;
+const SANGRIA_CONTINUACION = '      '; // las filas que continúan un mismo renglón van con sangría
+let _ctxMedida = null;
+function anchoTextoPx(t){
+  try{
+    if(!_ctxMedida){ _ctxMedida = document.createElement('canvas').getContext('2d'); _ctxMedida.font = '13.333px Arial, "Liberation Sans", Helvetica, sans-serif'; }
+    return _ctxMedida.measureText(t).width;
+  }catch(e){ return String(t).length * 7; }
+}
+// Parte cada renglón escrito por el técnico para que llene la fila hasta el final y
+// siga en la fila de abajo con sangría. Una palabra más larga que la fila se corta.
+function dividirEnFilasConSangria(texto){
+  const filas = [];
+  String(texto || '').split('\n').forEach(parrafo => {
+    const palabras = parrafo.trim().split(/\s+/).filter(Boolean);
+    if(!palabras.length) return;
+    let actual = '';
+    palabras.forEach(palabra => {
+      const prefijo = actual ? actual + ' ' : (filas.length && filas._continua ? SANGRIA_CONTINUACION : '');
+      let propuesta = prefijo + palabra;
+      if(anchoTextoPx(propuesta) <= ANCHO_FILA_PX){ actual = propuesta; return; }
+      if(actual){ filas.push(actual); filas._continua = true; propuesta = SANGRIA_CONTINUACION + palabra; }
+      // palabra demasiado larga para una fila: se corta por caracteres
+      while(anchoTextoPx(propuesta) > ANCHO_FILA_PX){
+        let n = propuesta.length - 1;
+        while(n > SANGRIA_CONTINUACION.length + 1 && anchoTextoPx(propuesta.slice(0, n)) > ANCHO_FILA_PX) n--;
+        filas.push(propuesta.slice(0, n)); filas._continua = true;
+        propuesta = SANGRIA_CONTINUACION + propuesta.slice(n);
+      }
+      actual = propuesta;
+    });
+    if(actual) filas.push(actual);
+    filas._continua = false;
+  });
+  return filas.slice();
+}
+
 function dividirEnFilas(texto, maxCaracteresPorFila){
   const lineasFinal = [];
   const parrafos = String(texto || '').split('\n');
@@ -2059,16 +2098,16 @@ function agregarObservacionesAdicionales(grid, cambios, textoAdicional, mantener
     // Se reemplaza por completo: el texto nuevo empieza desde la fila fija, y se
     // borra cualquier resto que hubiera quedado de la frase original en las filas
     // siguientes (por si el texto nuevo ocupa menos filas que antes).
-    const lineas = dividirEnFilas(textoAdicional, MAX_CARACTERES_FILA_OBSERVACIONES)
+    const lineas = dividirEnFilasConSangria(textoAdicional)
       .slice(0, FILAS_OBSERVACIONES_DISPONIBLES + 1);
     for(let i = 0; i <= FILAS_OBSERVACIONES_DISPONIBLES; i++){
-      marcarCambio(grid, cambios, filaFija + i, col, lineas[i] || '');
+      marcarCambio(grid, cambios, filaFija + i, col, lineas[i] || '', lineas[i] ? { horizontalAlignment: 'LEFT' } : null);
     }
     return;
   }
-  const lineas = dividirEnFilas(textoAdicional, MAX_CARACTERES_FILA_OBSERVACIONES)
+  const lineas = dividirEnFilasConSangria(textoAdicional)
     .slice(0, FILAS_OBSERVACIONES_DISPONIBLES);
-  lineas.forEach((linea, i) => marcarCambio(grid, cambios, filaFija + 1 + i, col, linea));
+  lineas.forEach((linea, i) => marcarCambio(grid, cambios, filaFija + 1 + i, col, linea, { horizontalAlignment: 'LEFT' }));
 }
 
 // Ubica el final del checklist YA IMPRESO en la plantilla (bajo "Descripción de los
@@ -2076,7 +2115,7 @@ function agregarObservacionesAdicionales(grid, cambios, textoAdicional, mantener
 // procedimiento adicional que el técnico haya escrito (uno por línea). No toca ni
 // reescribe los procedimientos que ya vienen impresos en la plantilla.
 function agregarProcedimientosAdicionales(grid, cambios, textoAdicional, reemplazarEstandar){
-  const lineas = String(textoAdicional || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const lineas = dividirEnFilasConSangria(textoAdicional);
   const label = findCellsWithText(grid, 'Descripción de los procedimientos realizados:')[0];
   if(!label) return;
 
@@ -2101,6 +2140,14 @@ function agregarProcedimientosAdicionales(grid, cambios, textoAdicional, reempla
   let vueltas = 0;
   while((grid.filas[r] && normText(grid.filas[r][label.c])) && vueltas < LIMITE_FILAS){
     r++; vueltas++;
+  }
+  // Nunca se escribe encima del título OBSERVACIONES
+  const obsTit = findCellsWithText(grid, 'OBSERVACIONES')[0];
+  if(obsTit && obsTit.r > r){
+    const capacidad = obsTit.r - r;
+    if(lineas.length > capacidad){ console.warn('Procedimientos: ' + lineas.length + ' filas y solo caben ' + capacidad); try{ showToast('Los procedimientos adicionales no caben completos en el formato: acórtelos o páselos a Observaciones.'); }catch(e){} }
+    lineas.slice(0, capacidad).forEach((linea, i) => marcarCambio(grid, cambios, r + i, label.c, linea, { horizontalAlignment: 'LEFT' }));
+    return;
   }
   lineas.forEach((linea, i) => marcarCambio(grid, cambios, r + i, label.c, linea));
 }
@@ -2153,11 +2200,10 @@ async function aplicarCambiosEnSheet(spreadsheetId, sheetId, cambios){
     const celda = { userEnteredValue: { stringValue: cambio.value } };
     let fields = 'userEnteredValue';
     if(cambio.formato){
-      celda.userEnteredFormat = {
-        horizontalAlignment: cambio.formato.horizontalAlignment,
-        verticalAlignment: cambio.formato.verticalAlignment
-      };
-      fields += ',userEnteredFormat.horizontalAlignment,userEnteredFormat.verticalAlignment';
+      celda.userEnteredFormat = {};
+      ['horizontalAlignment','verticalAlignment'].forEach(k => {
+        if(cambio.formato[k]){ celda.userEnteredFormat[k] = cambio.formato[k]; fields += ',userEnteredFormat.' + k; }
+      });
     }
     return {
       updateCells: {
