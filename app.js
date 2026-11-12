@@ -3522,6 +3522,22 @@ function onAppClick(e){
       if(path === 'draft.tipoMantenimiento' && state.draft && !state.editingId && !state.draft.numeroCambiado){
         state.draft.informeNo = informeNoParaTipo(v);
         saveState();
+      }else if(path === 'draft.tipoMantenimiento' && state.draft && state.editingId){
+        // Equipo ya guardado que cambia de tipo (ej: preventivo cancelado -> diagnóstico):
+        // si el número actual no corresponde al nuevo tipo, se ofrece el consecutivo correcto.
+        const d = state.draft, actual = String(d.informeNo || '').trim().toUpperCase();
+        const letra = v === 'Correctivo' ? 'C' : v === 'Diagnóstico' ? 'D' : '';
+        const correcto = letra ? actual.startsWith(letra + '-') : !!parseInformeNo(actual);
+        if(!correcto){
+          const nuevo = informeNoParaTipo(v);
+          if(nuevo && confirm('Este equipo tenía el informe No. ' + (actual || '(sin número)') + '.\n\nComo ahora es ' + v.toLowerCase() + ', le corresponde el No. ' + nuevo + '.\n\nAceptar = usar ' + nuevo + '\nCancelar = dejar el número anterior')){
+            const anterior = d.informeNo;
+            d.informeNo = nuevo;
+            d.numeroCambiado = true;
+            if(anterior && !d.obsConsecutivo) d.obsConsecutivo = 'Reemplaza al informe ' + anterior + ' (se cambió a ' + v.toLowerCase() + ')';
+          }
+          saveState();
+        }
       }
       render();
       break;
