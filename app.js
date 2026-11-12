@@ -304,6 +304,43 @@ function parseInformeCD(txt){
   const m = /^\s*([CD])-(\d{4})(\d{2,})\s*$/i.exec(String(txt || ''));
   return m ? { letra: m[1].toUpperCase(), ym: m[2], n: parseInt(m[3], 10) } : null;
 }
+// Números de informe ya usados según el Historial de la Base de Clientes (Drive). Se cargan al
+// conectar y al revisar la sincronización, para no repetir un número que ya usó otro
+// dispositivo o una visita anterior (p. ej. 9075-26 ya asignado en otro cliente).
+let informesUsados = new Set();
+try{ (JSON.parse(localStorage.getItem('rep_informes_usados') || '[]')).forEach(n => informesUsados.add(n)); }catch(e){}
+const claveInforme = t => String(t || '').trim().toUpperCase().replace(/\s+/g, '');
+function informeYaUsado(no, exceptoId){
+  const k = claveInforme(no);
+  if(!k) return false;
+  if(informesUsados.has(k)) return true;
+  return (state.equipos || []).some(e => e.id !== exceptoId && claveInforme(e.informeNo) === k);
+}
+async function actualizarInformesUsados(){
+  if(!state.driveToken) return;
+  try{
+    const id = await obtenerOCrearBaseClientes();
+    const filas = await leerRangoSheet(id, 'Historial!D2:D10000');
+    const usados = new Set();
+    filas.forEach(f => { const k = claveInforme(f[0]); if(k) usados.add(k); });
+    informesUsados = usados;
+    try{ localStorage.setItem('rep_informes_usados', JSON.stringify([...usados])); }catch(e){}
+    // el mayor de cada línea (impares Ramiro / pares Evelyn) del año en curso pasa al consecutivo
+    const c = Object.assign({}, state.consecutivo || {});
+    c.max = Object.assign({}, c.max || {});
+    const sufijo = c.sufijo || todayISO().slice(2, 4);
+    usados.forEach(k => { const p = parseInformeNo(k); if(p && p.sufijo === sufijo && p.numero > (c.max[p.numero % 2] || 0)) c.max[p.numero % 2] = p.numero; });
+    if(c.ultimo){ const mx = c.max[c.ultimo % 2]; if(mx && mx > c.ultimo) c.ultimo = mx; }
+    state.consecutivo = c;
+    // si hay un equipo nuevo en edición con un número que ya está usado, se corrige solo
+    const d = state.draft;
+    if(d && !state.editingId && !d.numeroCambiado && informeYaUsado(d.informeNo, d.id)){
+      d.informeNo = informeNoParaTipo(d.tipoMantenimiento);
+      if(state.screen === 'formEquipo') render();
+    }
+    saveState();
+  }catch(e){ /* sin conexión: se usa lo que ya se tenía */ }
+}
 function siguienteInformeCD(letra){
   const ym = ymVisita();
   const clave = letra + '-' + ym;
@@ -311,7 +348,10 @@ function siguienteInformeCD(letra){
   const SEMILLA = { 'C-2610': 2 };
   let n = Math.max((state.consecutivo && state.consecutivo.mensual && state.consecutivo.mensual[clave]) || 0, SEMILLA[clave] || 0);
   (state.equipos || []).forEach(e => { const p = parseInformeCD(e.informeNo); if(p && p.letra === letra && p.ym === ym && p.n > n) n = p.n; });
-  return letra + '-' + ym + String(n + 1).padStart(2, '0');
+  informesUsados.forEach(k => { const p = parseInformeCD(k); if(p && p.letra === letra && p.ym === ym && p.n > n) n = p.n; });
+  let sig = n + 1;
+  while(informeYaUsado(letra + '-' + ym + String(sig).padStart(2, '0'))) sig++;
+  return letra + '-' + ym + String(sig).padStart(2, '0');
 }
 // Número que corresponde según el tipo de mantenimiento elegido ('' si aún no hay o no aplica).
 function informeNoParaTipo(tipo){
@@ -329,7 +369,12 @@ function siguienteInformeNo(){
     if(!mejor) return '';
     c = { ultimo: mejor.numero, sufijo: mejor.sufijo };
   }
-  return (c.ultimo + 2) + '-' + c.sufijo; // impares siguen con impares y pares con pares (de 2 en 2)
+  // impares siguen con impares y pares con pares (de 2 en 2), saltando los ya usados
+  let n = c.ultimo + 2;
+  const mx = c.max && c.max[c.ultimo % 2];
+  if(mx && mx + 2 > n) n = mx + 2;
+  while(informeYaUsado(n + '-' + c.sufijo)) n += 2;
+  return n + '-' + c.sufijo;
 }
 function registrarConsecutivo(informeNo){
   const cd = parseInformeCD(informeNo);
@@ -415,6 +460,8 @@ function saveDraft(){
   if((d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') && !String(d.diagnostico || '').trim()){
     showToast('Escribe el diagnóstico: en ' + d.tipoMantenimiento.toLowerCase() + ' reemplaza la frase "Equipo programado para mantenimiento preventivo".'); return;
   }
+  if((!state.editingId || d.numeroCambiado) && informeYaUsado(d.informeNo, d.id) &&
+     !confirm('El informe No. ' + d.informeNo + ' ya está asignado a otro equipo.\n\nAceptar = guardarlo así de todas formas.\nCancelar = volver y cambiar el número.')) return;
   if(state.editingId){
     const idx = state.equipos.findIndex(e => e.id === state.editingId);
     if(idx>-1) state.equipos[idx] = d; else state.equipos.push(d);
@@ -522,7 +569,7 @@ function renderCliente(){
 // Solo se muestra un campo de texto cuando se elige explícitamente "+ Cliente nuevo".
 function clienteSelectorHtml(c){
   if(!state.driveToken){
-    return fieldMicHtml('cliente.nombre', c.nombre, 'Nombre del cliente', false);
+    return fieldMicHtml('cliente.nombre', c.nombre, 'Nombre del cliente', false) + '<div id="clienteSuggestions"></div>';
   }
   if(!clientesCache){
     cargarBaseClientes().then(render).catch(()=>{});
@@ -534,9 +581,22 @@ function clienteSelectorHtml(c){
 function renderClienteSuggestions(query){
   const box = document.getElementById('clienteSuggestions');
   if(!box) return;
-  if(!clientesCache){ box.innerHTML = ''; box.className = ''; return; }
+  if(!clientesCache && state.driveToken && !renderClienteSuggestions.cargando){
+    renderClienteSuggestions.cargando = true;
+    cargarBaseClientes().then(() => { renderClienteSuggestions.cargando = false; const el = document.getElementById('fld_cliente_nombre'); if(el && document.activeElement === el) renderClienteSuggestions(el.value); }).catch(() => { renderClienteSuggestions.cargando = false; });
+  }
+  const lista = clientesCache ? clientesCache.clientes : clientesGuardados().map(nombre => ({ nombre }));
   const q = normNombre(query || '');
-  const matches = clientesCache.clientes.filter(x => q && normNombre(x.nombre).includes(q));
+  // Coincide desde la primera letra con el inicio de cualquier palabra del nombre (o en cualquier
+  // parte si ya se escribieron 3 letras): "car" → "CARVAJAL EMPAQUES S.A.", "emp" → también.
+  const vistos = new Set();
+  const matches = lista.filter(x => {
+    const n = normNombre(x.nombre);
+    if(!q || vistos.has(n)) return false;
+    const ok = n.startsWith(q) || n.split(' ').some(w => w.startsWith(q)) || (q.length >= 3 && n.includes(q));
+    if(ok) vistos.add(n);
+    return ok;
+  }).sort((a, b) => (normNombre(a.nombre).startsWith(q) ? 0 : 1) - (normNombre(b.nombre).startsWith(q) ? 0 : 1));
   if(!q || !matches.length){ box.innerHTML = ''; box.className = ''; return; }
   box.className = 'equipo-suggestions';
   box.innerHTML = matches.slice(0, 20)
@@ -563,6 +623,50 @@ function confirmarCambioClienteSiHaceFalta(nombreAnterior, nombreNuevo){
   return true;
 }
 
+// Responsables de ejecución: con 2 letras se sugiere el nombre completo. Se aceptan varios
+// separados por coma o "y" (se completa el último).
+const RESPONSABLES_BASE = ['Ramiro A. Díaz', 'Evelyn Ramos'];
+function responsablesConocidos(){
+  let extra = [];
+  try{ extra = JSON.parse(localStorage.getItem('rep_responsables') || '[]'); }catch(e){}
+  const out = [], vistos = new Set();
+  [...RESPONSABLES_BASE, ...extra].forEach(n => { const k = normNombre(n); if(n && !vistos.has(k)){ vistos.add(k); out.push(n); } });
+  return out;
+}
+function recordarResponsables(txt){
+  const partes = String(txt || '').split(/\s*(?:,|\sy\s|\s-\s)\s*/i).map(x => x.trim()).filter(x => x.length >= 5);
+  if(!partes.length) return;
+  let extra = [];
+  try{ extra = JSON.parse(localStorage.getItem('rep_responsables') || '[]'); }catch(e){}
+  partes.forEach(p => { if(!responsablesConocidos().some(n => normNombre(n) === normNombre(p))) extra.push(p); });
+  try{ localStorage.setItem('rep_responsables', JSON.stringify(extra.slice(-20))); }catch(e){}
+}
+function partesResponsable(txt){
+  const m = /^(.*(?:,|\sy\s)\s*)?([^,]*)$/i.exec(String(txt || ''));
+  return { antes: (m && m[1]) || '', ultimo: ((m && m[2]) || '').trim() };
+}
+function renderResponsableSuggestions(txt){
+  const box = document.getElementById('responsableSuggestions');
+  if(!box) return;
+  const { ultimo } = partesResponsable(txt);
+  const q = normNombre(ultimo);
+  const matches = q.length < 2 ? [] : responsablesConocidos().filter(n => {
+    const k = normNombre(n);
+    return k !== q && (k.startsWith(q) || k.split(' ').some(w => w.startsWith(q)));
+  });
+  if(!matches.length){ box.innerHTML = ''; box.className = ''; return; }
+  box.className = 'equipo-suggestions';
+  box.innerHTML = matches.map(n => `<div class="equipo-suggestion" data-action="pickResponsable" data-value="${escapeHtml(n)}">${escapeHtml(n)}</div>`).join('');
+}
+function pickResponsable(nombre){
+  if(!state.draft) return;
+  const { antes } = partesResponsable(state.draft.responsable);
+  state.draft.responsable = antes + nombre;
+  const el = document.getElementById('fld_draft_responsable');
+  if(el) el.value = state.draft.responsable;
+  renderResponsableSuggestions('');
+  saveState();
+}
 function pickClienteExistente(nombre){
   if(!confirmarCambioClienteSiHaceFalta(state.cliente.nombre, nombre)) return;
   state.cliente.nombre = puntosSociedad(nombre);
@@ -763,6 +867,7 @@ function renderFormEquipo(){
       <div class="card">
         <div class="card-title">✍️ Responsables</div>
         ${fieldMicHtml('draft.responsable', d.responsable, 'Responsable(s) de ejecución', false)}
+        <div id="responsableSuggestions"></div>
         ${fieldMicHtml('draft.recibeSatisfaccion', d.recibeSatisfaccion, 'Recibe a satisfacción', false)}
       </div>
 
@@ -2499,6 +2604,7 @@ async function revisarSincronizacionRemota(){
       fusionarConsecutivoRemoto(remoto.consecutivo);
       saveState();
     }
+    await actualizarInformesUsados();
     const remotoTieneAlgo = (remoto.cliente && remoto.cliente.nombre) || (remoto.equipos && remoto.equipos.length);
     // Si hay una visita en curso más reciente (de este dispositivo o de otro), se
     // pregunta al entrar si se quiere continuar con esos equipos o empezar una
@@ -2585,6 +2691,8 @@ async function leerRangoSheet(spreadsheetId, rango){
   return data.values || [];
 }
 
+// nombres de clientes guardados en el dispositivo, para sugerir aunque aún no haya conexión
+function clientesGuardados(){ try{ return JSON.parse(localStorage.getItem('rep_clientes_nombres') || '[]'); }catch(e){ return []; } }
 async function cargarBaseClientes(){
   const id = await obtenerOCrearBaseClientes();
   const [clientesRaw, historialRaw] = await Promise.all([
@@ -2598,6 +2706,8 @@ async function cargarBaseClientes(){
     .filter(f => f[0])
     .map(f => ({ fecha: f[0]||'', cliente: f[1]||'', equipo: f[2]||'', informeNo: f[3]||'', excelUrl: f[4]||'', pdfUrl: f[5]||'' }));
   clientesCache = { clientes, historial };
+  try{ localStorage.setItem('rep_clientes_nombres', JSON.stringify(clientes.map(x => x.nombre))); }catch(e){}
+  historial.forEach(h => { const k = claveInforme(h.informeNo); if(k) informesUsados.add(k); });
   return clientesCache;
 }
 
@@ -3309,6 +3419,12 @@ function wireCommonHandlers(){
   // Nombre del cliente: al salir del campo, busca en la base de clientes. Si existe,
   // ofrece llenar el resto de los datos; si no existe, la va alimentando de una vez
   // (sin esperar a que se genere un informe).
+  const responsableInput = document.getElementById('fld_draft_responsable');
+  if(responsableInput){
+    responsableInput.addEventListener('input', () => renderResponsableSuggestions(responsableInput.value));
+    responsableInput.addEventListener('focus', () => renderResponsableSuggestions(responsableInput.value));
+    responsableInput.addEventListener('blur', () => setTimeout(() => { recordarResponsables(responsableInput.value); const b = document.getElementById('responsableSuggestions'); if(b){ b.innerHTML = ''; b.className = ''; } }, 250));
+  }
   const nombreClienteInput = document.getElementById('fld_cliente_nombre');
   if(nombreClienteInput){
     let nombreAlEnfocar = nombreClienteInput.value;
@@ -3412,6 +3528,7 @@ function onAppClick(e){
     }
     case 'pickEquipoTipo': pickEquipoTipo(value); break;
     case 'pickClienteExistente': pickClienteExistente(value); break;
+    case 'pickResponsable': pickResponsable(value); break;
     case 'verPdf': verPdf(id); break;
     case 'descargarPdf': descargarPdf(id); break;
     case 'subirDrive': subirDrive(id); break;
