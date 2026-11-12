@@ -532,7 +532,7 @@ function renderCliente(){
       <div class="topbar-row">
         <div>
           <div class="topbar-title">Datos del cliente</div>
-          <div class="topbar-sub">Se piden una sola vez por visita</div>
+          <div class="topbar-sub">Se piden una sola vez por visita · v${APP_VERSION}</div>
         </div>
       </div>
       <div class="step-pills">${stepPills('cliente')}</div>
@@ -921,7 +921,8 @@ function renderExportar(){
         <span>${escapeHtml(eq.tipo)}</span>
         ${yaGenerado ? `<span class="badge-listo" title="Generado el ${escapeHtml(eq.informeOficialFecha||'')}">✓ Ya generado</span>` : ''}
       </div>
-      <div class="status-line" style="text-align:left;margin:0 0 10px;">${escapeHtml(eq.marca||'—')} ${escapeHtml(eq.modelo||'')} · Serie ${escapeHtml(eq.serie||'—')}</div>
+      <div class="status-line" style="text-align:left;margin:0 0 4px;">${escapeHtml(eq.marca||'—')} ${escapeHtml(eq.modelo||'')} · Serie ${escapeHtml(eq.serie||'—')}</div>
+      <div class="status-line" style="text-align:left;margin:0 0 10px;">📁 Se guarda en: <b>${escapeHtml(rutaInformeTexto(eq))}</b></div>
       <div class="pdf-actions">
         ${tieneTemplate ? `<button class="btn ${yaGenerado?'btn-outline':'btn-primary'} btn-sm" style="width:100%;" data-action="prepararGuardado" data-id="${eq.id}" ${driveOn?'':'disabled style="opacity:.5"'}>📄 ${yaGenerado ? 'Generar de nuevo (formato real)' : 'Generar informe oficial (formato real)'}</button>` : `<div class="status-line">Sin plantilla oficial para este equipo.</div>`}
       </div>
@@ -2297,6 +2298,15 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
+const APP_VERSION = '2026.11.12-c';
+function carpetaTecnicoDe(eq){
+  return parseInformeCD(eq.informeNo)
+    ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
+    : (numeroReporteEsImpar(eq.informeNo) ? 'Ramiro' : 'Evelyn');
+}
+function rutaInformeTexto(eq){
+  return 'Reportes › ' + nombreAnioVisita() + ' › ' + nombreMesVisita() + ' › ' + carpetaTecnicoDe(eq);
+}
 function nombreAnioVisita(){
   const m = /^(\d{4})-/.exec(state.cliente.fecha || '');
   return m ? m[1] : String(new Date().getFullYear());
@@ -3303,9 +3313,7 @@ async function generarInformeOficial(id, folderId){
     const carpetaReportesId = await encontrarOCrearSubcarpeta(folderId, 'Reportes');
     // Preventivos: impar -> Ramiro, par -> Evelyn. Correctivo/Diagnóstico (C-/D-) no llevan
     // consecutivo por persona: la carpeta sale del responsable de ejecución (Ramiro por defecto).
-    const nombreSubcarpetaTecnico = parseInformeCD(eq.informeNo)
-      ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
-      : (numeroReporteEsImpar(eq.informeNo) ? 'Ramiro' : 'Evelyn');
+    const nombreSubcarpetaTecnico = carpetaTecnicoDe(eq);
     // Orden de carpetas: Reportes › Año › Mes › Ramiro|Evelyn (según la fecha de la visita).
     // Si ya existen, simplemente se depositan ahí. El Excel queda en la carpeta del técnico
     // y el PDF en su subcarpeta "PDF".
