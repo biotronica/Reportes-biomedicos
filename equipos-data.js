@@ -572,6 +572,7 @@ const EQUIPOS_DATA = {
     "Pruebas de fugas.",
     "Pruebas de funcionamiento general.",
   ],
+  "Tensiómetro Digital - Toma de medidas": [],
   "Tensiómetro Mercurio": [
     "Limpieza de mangueras",
     "Limpieza de brazaletes",
@@ -730,6 +731,8 @@ const TEMPLATE_FILE_IDS = {
   "Tens": "1ALgnr-9d3aQySghbwmTU19lTeca9IV9t",
   "Tensiómetro Digital": "1AuTE1o9HjOoW6-ngUhP9OeOmRORjZasz",
   "Tensiómetro Mercurio": "1M8S3-ee6glAE6J2XRowaSDyzb3wd8Mgs",
+  // Informe T con toma de medidas: la plantilla viaja con la app
+  "Tensiómetro Digital - Toma de medidas": "LOCAL:plantilla-tensiometro-medidas.xlsx",
   "Termohigrómetro": "14X0Nqd3gOnRJCZIpl2yBeHunAUcCu3yw",
   "Termohigrómetro análogo": "1ZpAMMf3B_28TqBtVzYZns4R9X4-VzoBp",
   "Termómetro Digital": "1tknK9zqiPkyaUr0Fbn7KRFajUwKruLe2",

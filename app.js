@@ -349,7 +349,7 @@ async function actualizarInformesUsados(){
 // Un número anulado (sticker dañado, informe cambiado a diagnóstico, equipo eliminado…) queda
 // anotado en la pestaña "Anulados" de la Base de Clientes. Cuenta como usado: el consecutivo
 // nunca lo vuelve a dar y la Plataforma lo muestra como anulado (no como faltante).
-const esNumeroSticker = t => !!(parseInformeNo(t) || parseInformeCD(t));
+const esNumeroSticker = t => !!(parseInformeNo(t) || parseInformeCD(t) || parseInformeT(t));
 function anuladosPendientes(){ try{ return JSON.parse(localStorage.getItem('rep_anulados_pend') || '[]'); }catch(e){ return []; } }
 function guardarAnuladosPendientes(a){ try{ localStorage.setItem('rep_anulados_pend', JSON.stringify(a)); }catch(e){} }
 async function asegurarHojaAnulados(id){
@@ -417,8 +417,116 @@ function siguienteInformeCD(letra){
   while(informeYaUsado(letra + '-' + ym + String(sig).padStart(2, '0'))) sig++;
   return letra + '-' + ym + String(sig).padStart(2, '0');
 }
+// ===== Tensiómetro digital: toma de medidas (informes T) =====
+// Formato propio (plantilla-tensiometro-medidas.xlsx): 6 lecturas contra el equipo patrón,
+// evaluación automática según la tolerancia del fabricante y observaciones armadas solas.
+// Consecutivo propio: T1002-26, T1003-26… Se guarda en MANTENIMIENTOS › TENSIOMETROS DIGITALES ›
+// (MARCA u OTROS) › Cliente.
+const TIPO_TENS = 'Tensiómetro Digital - Toma de medidas';
+const esTipoTens = t => t === TIPO_TENS;
+const TENS_TOL = 3;      // ± mmHg que especifica el fabricante
+const TENS_MARGEN = 2;   // hasta 2 mmHg por encima de la tolerancia: consultar con el médico
+const TENS_ULTIMO_CONOCIDO = 1001; // T1001-26 se hizo antes de la app
+const TENS_RANGOS = [
+  { nombre: 'Presión baja', texto: 'hipotensión' },
+  { nombre: 'Presión normal', texto: 'presión normal' },
+  { nombre: 'Presión alta', texto: 'hipertensión' }
+];
+const TENS_PATRON_TXT = 'Para la comparación se utiliza un equipo patrón marca Rigel medical modelo Uni-Sim.';
+const TENS_OBS_MTTO = 'Se revisa tanto la tarjeta electrónica como sus partes asociadas y se encuentran en buen estado físico.';
+function tensPatronGuardado(){
+  try{ const g = JSON.parse(localStorage.getItem('rep_tens_patron') || 'null'); if(Array.isArray(g) && g.length === 3) return g; }catch(e){}
+  return [['80','40','50'], ['120','80','80'], ['180','140','130']];
+}
+function tensMedidasDefault(){
+  const pat = tensPatronGuardado();
+  return [0,0,1,1,2,2].map(r => ({ rango: r, pSis: pat[r][0], pDia: pat[r][1], pPul: pat[r][2], sis: '', dia: '', pul: '' }));
+}
+const tensNum = v => { const t = String(v == null ? '' : v).trim().replace(',', '.'); return t === '' || isNaN(Number(t)) ? null : Number(t); };
+function tensDif(m){
+  const d = (a, b) => (tensNum(a) == null || tensNum(b) == null) ? null : Math.abs(tensNum(a) - tensNum(b));
+  return { s: d(m.sis, m.pSis), d: d(m.dia, m.pDia), p: d(m.pul, m.pPul) };
+}
+// ok = dentro de ± 3 mmHg · medico = la supera en máximo 2 mmHg · no = la supera en más de 2 mmHg
+function tensNivel(dif){
+  if(dif == null) return null;
+  if(dif <= TENS_TOL) return 'ok';
+  if(dif <= TENS_TOL + TENS_MARGEN) return 'medico';
+  return 'no';
+}
+const TENS_PESO = { ok: 0, medico: 1, no: 2 };
+function tensEvaluar(meds){
+  meds = meds || [];
+  const rangos = TENS_RANGOS.map((r, i) => {
+    const filas = meds.filter(m => m.rango === i);
+    let maxS = null, maxD = null, faltan = false;
+    filas.forEach(m => {
+      const df = tensDif(m);
+      if(df.s == null || df.d == null) faltan = true;
+      if(df.s != null) maxS = Math.max(maxS == null ? 0 : maxS, df.s);
+      if(df.d != null) maxD = Math.max(maxD == null ? 0 : maxD, df.d);
+    });
+    const max = (maxS == null && maxD == null) ? null : Math.max(maxS || 0, maxD || 0);
+    return Object.assign({}, r, { maxS, maxD, max, nivel: tensNivel(max), faltan });
+  });
+  const conDatos = rangos.filter(r => r.nivel);
+  let nivel = null;
+  conDatos.forEach(r => { if(!nivel || TENS_PESO[r.nivel] > TENS_PESO[nivel]) nivel = r.nivel; });
+  return { rangos, nivel, completo: rangos.every(r => !r.faltan) };
+}
+const TENS_VEREDICTO = {
+  ok: '✅ Aceptable: dentro de ± 3 mmHg',
+  medico: '⚠️ Supera la tolerancia en máximo 2 mmHg: consultar con el médico si permite su uso',
+  no: '⛔ Supera la tolerancia en más de 2 mmHg: no se recomienda su uso'
+};
+function tensObservaciones(eq){
+  const ev = tensEvaluar(eq.tensMedidas);
+  const L = [];
+  const mm = n => (Math.round(n * 10) / 10).toString().replace('.', ',') + ' mmHg';
+  ev.rangos.forEach(r => {
+    if(r.max == null) return;
+    const cab = '* En ' + r.texto + ' presenta una diferencia comparada con nuestro equipo patrón';
+    if(r.nivel === 'ok'){
+      L.push(cab + ' de máximo ' + mm(r.maxS || 0) + ' en presión sistólica y ' + mm(r.maxD || 0) + ' en presión diastólica, dentro de la tolerancia. El manual especifica una tolerancia de ± ' + TENS_TOL + ' mmHg.');
+    }else{
+      L.push(cab + ' de hasta ' + mm(r.maxS || 0) + ' en presión sistólica y ' + mm(r.maxD || 0) + ' en presión diastólica, que supera la tolerancia de ± ' + TENS_TOL + ' mmHg especificada por el manual.');
+    }
+  });
+  if(ev.nivel === 'ok') L.push('* Este equipo presenta un comportamiento aceptable ya que se encuentra en el rango especificado por fábrica.');
+  else if(ev.nivel === 'medico') L.push('* Este equipo supera la tolerancia especificada por fábrica (± ' + TENS_TOL + ' mmHg) en máximo ' + TENS_MARGEN + ' mmHg. Se recomienda consultar con el médico si permite su uso.');
+  else if(ev.nivel === 'no') L.push('* Este equipo presenta un comportamiento no aceptable: supera la tolerancia especificada por fábrica (± ' + TENS_TOL + ' mmHg) en más de ' + TENS_MARGEN + ' mmHg. No se recomienda su uso.');
+  L.push('* ' + TENS_PATRON_TXT);
+  String(eq.observaciones || '').split('\n').map(x => x.trim()).filter(Boolean)
+    .forEach(x => L.push(/^[*•-]/.test(x) ? '* ' + x.replace(/^[*•-]\s*/, '') : '* ' + x));
+  return L.join('\n');
+}
+// Texto de las celdas de lectura, con los espacios del formato original para que quede
+// alineado bajo "PRESIÓN (mmHg)" y "FREC. (Puls Min)".
+function tensCelda(sis, dia, pul, equipo){
+  const pres = (sis || dia) ? String(sis || '') + '/' + String(dia || '') : '';
+  const p = String(pul || '');
+  if(!pres && !p) return '';
+  const lead = Math.max(2, (equipo ? 33 : 28) - 2 * pres.length);
+  const gap = Math.max(4, 37 - pres.length - Math.max(0, p.length - 2));
+  return ' '.repeat(lead) + pres + ' '.repeat(gap) + p;
+}
+function parseInformeT(txt){
+  const m = /^\s*T\s*(\d+)\s*[-–—]\s*(\d+)\s*$/i.exec(String(txt || ''));
+  return m ? { n: parseInt(m[1], 10), sufijo: m[2] } : null;
+}
+function siguienteInformeT(){
+  let n = Math.max(TENS_ULTIMO_CONOCIDO, (state.consecutivo && state.consecutivo.T) || 0);
+  (state.equipos || []).forEach(e => { const p = parseInformeT(e.informeNo); if(p && p.n > n) n = p.n; });
+  informesUsados.forEach(k => { const p = parseInformeT(k); if(p && p.n > n) n = p.n; });
+  const yy = String(nombreAnioVisita()).slice(-2);
+  let sig = n + 1;
+  while(informeYaUsado('T' + sig + '-' + yy)) sig++;
+  return 'T' + sig + '-' + yy;
+}
+
 // Número que corresponde según el tipo de mantenimiento elegido ('' si aún no hay o no aplica).
 function informeNoParaTipo(tipo){
+  if(tipo && state.draft && esTipoTens(state.draft.tipo)) return siguienteInformeT();
   if(tipo === 'Preventivo') return siguienteInformeNo();
   if(tipo === 'Correctivo') return siguienteInformeCD('C');
   if(tipo === 'Diagnóstico') return siguienteInformeCD('D');
@@ -441,6 +549,11 @@ function siguienteInformeNo(){
   return n + '-' + c.sufijo;
 }
 function registrarConsecutivo(informeNo){
+  const pt = parseInformeT(informeNo);
+  if(pt){
+    state.consecutivo = Object.assign({}, state.consecutivo || {}, { T: Math.max((state.consecutivo && state.consecutivo.T) || 0, pt.n) });
+    return;
+  }
   const cd = parseInformeCD(informeNo);
   if(cd){
     const c = Object.assign({}, state.consecutivo || {});
@@ -768,7 +881,7 @@ function pickClienteExistente(nombre){
 
 function informeNoHtml(d){
   const t = d.tipoMantenimiento;
-  const auto = (t === 'Correctivo' || t === 'Diagnóstico') || (t === 'Preventivo' && (!!d.informeNo));
+  const auto = (t === 'Correctivo' || t === 'Diagnóstico') || (t === 'Preventivo' && (!!d.informeNo)) || !!parseInformeT(d.informeNo);
   let input, etiqueta = '';
   if(!t){
     input = `<input type="text" id="fld_draft_informeNo" value="" readonly placeholder="Se asigna al elegir el tipo de mantenimiento" style="background:#EEF3F7;">`;
@@ -910,13 +1023,15 @@ function renderFormEquipo(){
         </div>
       </div>
 
+      ${esTipoTens(d.tipo) ? tensCardHtml(d) : ''}
+
       <div class="card">
         <div class="card-title">🩻 Diagnóstico</div>
         ${(d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') ? '<div class="status-line" style="text-align:left;margin:0 0 8px;">En correctivo y diagnóstico, lo que escribas aquí <b>reemplaza</b> la frase "Equipo programado para mantenimiento preventivo" del informe.</div>' : ''}
         ${fieldMicHtml('draft.diagnostico', d.diagnostico, 'Diagnóstico del equipo', true)}
       </div>
 
-      <div class="card">
+      <div class="card" ${esTipoTens(d.tipo) ? 'style="display:none"' : ''}>
         <div class="card-title">✅ Procedimientos adicionales</div>
         <div class="status-line">${(d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') ? 'En correctivo y diagnóstico NO se imprimen los procedimientos estándar: en el informe solo aparece lo que escribas aquí (uno por línea).' : 'La plantilla oficial ya incluye los procedimientos estándar de este equipo. Escribe aquí solo si hiciste algo adicional a lo ya incluido (uno por línea).'}</div>
         ${fieldMicHtml('draft.procedimientosAdicionales', d.procedimientosAdicionales, 'Procedimientos adicionales (opcional)', true)}
@@ -944,8 +1059,9 @@ function renderFormEquipo(){
       </div>
 
       <div class="card">
-        <div class="card-title">📝 Observaciones adicionales</div>
-        ${fieldMicHtml('draft.observaciones', d.observaciones, 'Observaciones adicionales (opcional)', true)}
+        <div class="card-title">📝 ${esTipoTens(d.tipo) ? 'Observación del mantenimiento preventivo' : 'Observaciones adicionales'}</div>
+        ${esTipoTens(d.tipo) ? '<div class="status-line" style="text-align:left;margin:0 0 8px;">Va al final de las observaciones, después de los comentarios de las mediciones (que la app arma sola).</div>' : ''}
+        ${fieldMicHtml('draft.observaciones', d.observaciones, esTipoTens(d.tipo) ? 'Observación del mantenimiento' : 'Observaciones adicionales (opcional)', true)}
       </div>
 
       <div class="card">
@@ -988,8 +1104,73 @@ function renderEquipoSuggestions(query){
 }
 
 function pickEquipoTipo(name){
-  state.draft.tipo = name;
+  const d = state.draft;
+  const antes = d.tipo;
+  d.tipo = name;
+  if(esTipoTens(name)){
+    if(!d.tensMedidas) d.tensMedidas = tensMedidasDefault();
+    if(!d.tipoMantenimiento) d.tipoMantenimiento = 'Preventivo';
+    if(!d.observaciones) d.observaciones = TENS_OBS_MTTO;
+    if(!state.editingId){ d.limpiezaInterior = false; d.limpiezaExterior = true; }
+    if((!state.editingId || !d.informeNo) && !parseInformeT(d.informeNo)) d.informeNo = siguienteInformeT();
+  }else if(esTipoTens(antes) && parseInformeT(d.informeNo) && !state.editingId){
+    d.informeNo = informeNoParaTipo(d.tipoMantenimiento);
+    if(d.observaciones === TENS_OBS_MTTO) d.observaciones = '';
+  }
+  saveState();
   render();
+}
+function tensCardHtml(d){
+  const meds = d.tensMedidas || (d.tensMedidas = tensMedidasDefault());
+  const inp = (i, k, ph, w) => `<input type="text" inputmode="numeric" class="tens-in" data-path="draft.tensMedidas.${i}.${k}" value="${escapeHtml(meds[i][k])}" placeholder="${ph}" style="width:${w}px;padding:6px 4px;text-align:center;font-size:15px;">`;
+  const filas = TENS_RANGOS.map((r, ri) => {
+    const idx = [ri * 2, ri * 2 + 1];
+    return `<div style="margin:10px 0 4px;font-weight:700;font-size:13px;color:var(--primary,#0a1f8f);">${r.nombre}</div>
+      <div style="display:flex;gap:4px;align-items:center;font-size:12px;color:var(--text-muted);margin-bottom:4px;">
+        <span style="width:86px;">Patrón</span><span>Sist. / Diast. · Pulso</span></div>
+      <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;">
+        <span style="width:86px;font-size:12px;">mmHg · ppm</span>${inp(idx[0],'pSis','S',46)}/${inp(idx[0],'pDia','D',46)}·${inp(idx[0],'pPul','P',46)}
+      </div>
+      ${idx.map((i, k) => `<div style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
+        <span style="width:86px;font-size:12px;">Equipo ${k + 1}</span>${inp(i,'sis','S',46)}/${inp(i,'dia','D',46)}·${inp(i,'pul','P',46)}
+        <span class="tens-dif" data-i="${i}" style="font-size:12px;margin-left:4px;"></span></div>`).join('')}`;
+  }).join('');
+  return `
+      <div class="card">
+        <div class="card-title">📏 Toma de medidas (equipo patrón vs. tensiómetro)</div>
+        <div class="status-line" style="text-align:left;margin:0 0 6px;">Tolerancia del fabricante: <b>± ${TENS_TOL} mmHg</b>. Hasta ${TENS_MARGEN} mmHg por encima: consultar con el médico. Más: no se recomienda su uso. El valor del patrón de cada rango se usa para sus dos lecturas.</div>
+        ${filas}
+        <div id="tensVeredicto" style="margin-top:10px;padding:10px;border-radius:10px;font-size:14px;font-weight:600;"></div>
+        <details style="margin-top:8px;"><summary style="font-size:13px;cursor:pointer;">Ver observaciones que van al informe</summary>
+          <div id="tensObsPreview" style="white-space:pre-wrap;font-size:12px;margin-top:6px;color:var(--text-muted);"></div></details>
+      </div>`;
+}
+// Copia el patrón de la primera lectura a la segunda del mismo rango y refresca la evaluación.
+function actualizarTensEval(){
+  const d = state.draft;
+  if(!d || !esTipoTens(d.tipo) || !d.tensMedidas) return;
+  d.tensMedidas.forEach((m, i) => {
+    if(i % 2 === 1){ const a = d.tensMedidas[i - 1]; m.pSis = a.pSis; m.pDia = a.pDia; m.pPul = a.pPul; }
+  });
+  const colores = { ok: '#1b7f3b', medico: '#b26a00', no: '#c62828' };
+  document.querySelectorAll('.tens-dif').forEach(el => {
+    const m = d.tensMedidas[+el.dataset.i]; const df = tensDif(m);
+    if(df.s == null && df.d == null){ el.textContent = ''; return; }
+    const nv = tensNivel(Math.max(df.s || 0, df.d || 0));
+    el.textContent = 'Δ ' + (df.s == null ? '–' : df.s) + '/' + (df.d == null ? '–' : df.d);
+    el.style.color = colores[nv]; el.style.fontWeight = '700';
+  });
+  const ev = tensEvaluar(d.tensMedidas);
+  const box = document.getElementById('tensVeredicto');
+  if(box){
+    const fondo = { ok: '#e7f6ec', medico: '#fff4e0', no: '#fdecec' };
+    box.textContent = ev.nivel ? TENS_VEREDICTO[ev.nivel] + (ev.completo ? '' : ' (faltan lecturas)') : 'Escriba las lecturas del tensiómetro.';
+    box.style.background = ev.nivel ? fondo[ev.nivel] : '#EEF3F7';
+    box.style.color = ev.nivel ? colores[ev.nivel] : 'inherit';
+  }
+  const pv = document.getElementById('tensObsPreview');
+  if(pv) pv.textContent = tensObservaciones(d);
+  try{ localStorage.setItem('rep_tens_patron', JSON.stringify([0,2,4].map(i => [d.tensMedidas[i].pSis, d.tensMedidas[i].pDia, d.tensMedidas[i].pPul]))); }catch(e){}
 }
 
 function cancelForm(){
@@ -1736,7 +1917,7 @@ function sanitizeFilename(s){
 
 function nombreArchivo(equipo){
   const numero = sanitizeFilename(equipo.informeNo || 'SN');
-  const tipo = sanitizeFilename(equipo.tipo);
+  const tipo = sanitizeFilename(esTipoTens(equipo.tipo) ? 'Tensiometro Digital' : equipo.tipo);
   const marca = sanitizeFilename(equipo.marca || 'SM');
   const serie = sanitizeFilename(equipo.serie || 'SN');
   return `${numero}_${tipo}_${marca}_${serie}.pdf`;
@@ -1962,6 +2143,12 @@ function driveHeaders(){
 }
 
 async function descargarPlantillaBytes(fileId){
+  if(String(fileId).startsWith('LOCAL:')){
+    // Plantilla que viaja con la app (ej. tensiómetro con toma de medidas)
+    const r = await fetch(String(fileId).slice(6) + '?v=' + APP_VERSION, { cache: 'no-store' });
+    if(!r.ok) throw new Error('No se pudo cargar la plantilla (HTTP ' + r.status + ')');
+    return r.arrayBuffer();
+  }
   const res = await fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
     headers: driveHeaders()
   });
@@ -2259,7 +2446,41 @@ function agregarProcedimientosAdicionales(grid, cambios, textoAdicional, reempla
 
 // Calcula la lista de cambios (celda + valor nuevo) a partir de los datos capturados.
 // No toca nada de formato salvo donde se pide explícitamente (ver "formato" abajo).
+// Informe T de tensiómetro digital: misma cabecera que la V7, pero con la tabla de medidas,
+// 11 filas de observaciones (filas 51–61) y responsables en la fila 66. Se escriben TODAS
+// las celdas variables (también las vacías) porque la plantilla trae un informe de ejemplo.
+function calcularCambiosTens(grid, equipo, cliente){
+  const cambios = [];
+  const IZQ_ABAJO = { horizontalAlignment: 'LEFT', verticalAlignment: 'BOTTOM' };
+  const poner = (r, c, v, f) => marcarCambio(grid, cambios, r, c, v == null ? '' : String(v), f);
+  poner(5, 4, cliente.fecha || '', IZQ_ABAJO);
+  poner(6, 4, cliente.solicitante); poner(7, 4, cliente.personaCargo); poner(8, 4, cliente.contacto, IZQ_ABAJO);
+  poner(5, 19, equipo.informeNo);
+  poner(20, 16, equipo.ubicacion || 'NI'); poner(21, 2, equipo.marca); poner(21, 16, equipo.serie || 'NI');
+  poner(22, 2, equipo.modelo); poner(22, 16, equipo.codigo || 'NI');
+  Object.keys(CASILLAS_V7).forEach(k => { const [r, c] = CASILLAS_V7[k]; poner(r, c, ''); });
+  if(CASILLAS_V7[equipo.tipoMantenimiento]) marcarCasilla(grid, cambios, equipo.tipoMantenimiento);
+  if(equipo.claseFalla === 'Otro') marcarCasilla(grid, cambios, 'OtroFalla');
+  else if(CASILLAS_V7[equipo.claseFalla]) marcarCasilla(grid, cambios, equipo.claseFalla);
+  marcarCasilla(grid, cambios, equipo.fueraDeServicio ? 'FueraServicioSI' : 'FueraServicioNO');
+  marcarCasilla(grid, cambios, equipo.limpiezaInterior ? 'InteriorSI' : 'InteriorNO');
+  marcarCasilla(grid, cambios, equipo.limpiezaExterior ? 'ExteriorSI' : 'ExteriorNO');
+  agregarCampoDebajo(grid, cambios, 'diagnostico', equipo.diagnostico);
+  const meds = equipo.tensMedidas || tensMedidasDefault();
+  meds.slice(0, 6).forEach((m, i) => {
+    poner(43 + i, 1, tensCelda(m.pSis, m.pDia, m.pPul, false));
+    poner(43 + i, 9, tensCelda(m.sis, m.dia, m.pul, true));
+  });
+  const lineas = dividirEnFilasConSangria(tensObservaciones(equipo));
+  if(lineas.length > 11){ try{ showToast('Las observaciones no caben completas en el formato: acorte la observación del mantenimiento.'); }catch(e){} }
+  for(let i = 0; i < 11; i++) poner(50 + i, 1, lineas[i] || '', lineas[i] ? { horizontalAlignment: 'LEFT' } : null);
+  poner(65, 2, equipo.responsable);
+  poner(65, 19, equipo.recibeSatisfaccion);
+  return cambios;
+}
+
 function calcularCambiosPlantilla(grid, equipo, cliente){
+  if(esTipoTens(equipo.tipo)) return calcularCambiosTens(grid, equipo, cliente);
   const cambios = [];
   const IZQ_ABAJO = { horizontalAlignment: 'LEFT', verticalAlignment: 'BOTTOM' };
 
@@ -2343,11 +2564,12 @@ function normNombre(s){
 // (sin importar mayúsculas/minúsculas, tildes ni espacios de más, ya que tus carpetas
 // existentes no siguen un mismo formato — "UCIS DE COLOMBIA", "Clinica CES", etc.). Si
 // no existe ninguna con ese nombre, crea una nueva para ese cliente.
-async function encontrarOCrearCarpetaCliente(nombreCliente){
+async function encontrarOCrearCarpetaCliente(nombreCliente, raizId){
+  const raiz = raizId || CONFIG.MANTENIMIENTOS_FOLDER_ID;
   const nombre = (nombreCliente || '').trim();
-  if(!nombre) return CONFIG.MANTENIMIENTOS_FOLDER_ID;
+  if(!nombre) return raiz;
 
-  const q = "mimeType = 'application/vnd.google-apps.folder' and '" + CONFIG.MANTENIMIENTOS_FOLDER_ID + "' in parents and trashed = false";
+  const q = "mimeType = 'application/vnd.google-apps.folder' and '" + raiz + "' in parents and trashed = false";
   const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&pageSize=1000&fields=files(id,name)', {
     headers: driveHeaders()
   });
@@ -2363,13 +2585,33 @@ async function encontrarOCrearCarpetaCliente(nombreCliente){
     body: JSON.stringify({
       name: nombre,
       mimeType: 'application/vnd.google-apps.folder',
-      parents: [CONFIG.MANTENIMIENTOS_FOLDER_ID]
+      parents: [raiz]
     })
   });
   if(!createRes.ok) throw new Error('No se pudo crear la carpeta del cliente (HTTP ' + createRes.status + ')');
   const created = await createRes.json();
   await crearSubcarpetasBase(created.id);
   return created.id;
+}
+
+// Tensiómetros (informes T): MANTENIMIENTOS › TENSIOMETROS DIGITALES › MARCA › Cliente.
+// La marca se busca entre las carpetas que ya existen; si no coincide con ninguna, va a "OTROS".
+async function carpetaTensMarca(marca){
+  const raiz = await encontrarOCrearSubcarpeta(CONFIG.MANTENIMIENTOS_FOLDER_ID, 'TENSIOMETROS DIGITALES');
+  const q = "mimeType = 'application/vnd.google-apps.folder' and '" + raiz + "' in parents and trashed = false";
+  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&pageSize=1000&fields=files(id,name)', { headers: driveHeaders() });
+  if(!res.ok) throw new Error('No se pudo leer TENSIOMETROS DIGITALES (HTTP ' + res.status + ')');
+  const carpetas = ((await res.json()).files || []).filter(f => normNombre(f.name) !== 'otros');
+  const m = normNombre(marca);
+  const palabras = m.split(' ').filter(w => w.length >= 3);
+  const f = m && (carpetas.find(c => normNombre(c.name) === m)
+    || carpetas.find(c => palabras.includes(normNombre(c.name)))
+    || carpetas.find(c => normNombre(c.name).split(' ').includes(palabras[0])));
+  return f ? f.id : encontrarOCrearSubcarpeta(raiz, 'OTROS');
+}
+async function carpetaClienteDe(eq){
+  if(eq && esTipoTens(eq.tipo)) return encontrarOCrearCarpetaCliente(state.cliente.nombre, await carpetaTensMarca(eq.marca));
+  return encontrarOCrearCarpetaCliente(state.cliente.nombre);
 }
 
 // Si la carpeta del cliente ya tiene una subcarpeta "Reportes" (como suele pasar en las
@@ -2402,7 +2644,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.12-f';
+const APP_VERSION = '2026.11.12-g';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -2464,7 +2706,7 @@ async function encontrarOCrearSubcarpeta(carpetaPadreId, nombreSubcarpeta){
   return creada.id;
 }
 
-async function exportarComoPdf(sheetsFileId, sheetId, nombreResponsable){
+async function exportarComoPdf(sheetsFileId, sheetId, nombreResponsable, formatoT){
   // Se usa el exportador directo de Sheets (no el de Drive) porque permite indicar con
   // "gid" cuál hoja exportar — así el PDF trae solo "PRIMERA", no ANEXO ni las otras
   // pestañas que también tiene el archivo. El tamaño carta y el ajuste a una página se
@@ -2491,7 +2733,7 @@ async function exportarComoPdf(sheetsFileId, sheetId, nombreResponsable){
   const res = await fetch(url, { headers: driveHeaders() });
   if(!res.ok) throw new Error('No se pudo exportar a PDF (HTTP ' + res.status + ')');
   const bytesOriginales = await res.arrayBuffer();
-  return await pegarLogoFirmaSello(bytesOriginales, nombreResponsable);
+  return await pegarLogoFirmaSello(bytesOriginales, nombreResponsable, formatoT);
 }
 
 function base64ADatos(dataUri){
@@ -2527,7 +2769,7 @@ function buscarFirmaTecnico(nombre){
 // vez de seguir peleando con esa conversión, se deja que Google solo se encargue del
 // texto (que sí hace bien), se fuerza el tamaño carta directamente en el PDF, y el
 // logo/firma/sello se pegan aparte, como imágenes ya preparadas, directo encima.
-async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable){
+async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable, formatoT){
   const { PDFDocument } = PDFLib;
   const pdfDoc = await PDFDocument.load(bytesOriginalesPdf);
   const pagina = pdfDoc.getPages()[0];
@@ -2540,7 +2782,18 @@ async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable){
   const { width: anchoActual, height: altoActual } = pagina.getSize();
   const sx = anchoActual / ANCHO_CARTA;
   const sy = altoActual / ALTO_CARTA;
-  const pos = (x, y, w, h) => ({ x: x * sx, y: y * sy, width: w * sx, height: h * sy });
+  let pos = (x, y, w, h) => ({ x: x * sx, y: y * sy, width: w * sx, height: h * sy });
+  if(formatoT){
+    // El formato T tiene 70 filas (la V7, 65): al ajustarse a la página queda al 92,3 %.
+    // Lo de arriba (logo) se ancla al borde superior y las firmas al inferior.
+    const k = 0.7759 / 0.8406, M = 18, TOP = 774;
+    const base = pos;
+    pos = (x, y, w, h) => {
+      const nx = M + (x - M) * k, nw = w * k, nh = h * k;
+      const ny = y > 400 ? TOP - (TOP - (y + h)) * k - nh : M + (y - M) * k;
+      return base(nx, ny, nw, nh);
+    };
+  }
 
   const logoImg = await pdfDoc.embedJpg(base64ADatos(LOGO_INTELMEDICA_B64));
   pagina.drawImage(logoImg, pos(43, 737, 134, 34));
@@ -3106,7 +3359,7 @@ async function prepararGuardadoMasivo(){
     if(!confirm(sinNumero.length + ' de ' + pendientes.length + ' equipo(s) no tienen "Informe No." — esos van a quedar sin ese número. ¿Continuar de todas formas?')) return;
   }
   for(const eq of pendientes){
-    if(eq.observaciones){
+    if(eq.observaciones && !esTipoTens(eq.tipo)){
       eq._mantenerObservacionFija = confirm(
         eq.tipo + ': ¿la observación "Equipo en buen estado físico y funcional." se debe mantener además de lo que escribiste?\n\n' +
         'Aceptar = se mantiene esa frase y se agrega lo tuyo debajo (equipo quedó bien).\n' +
@@ -3145,7 +3398,8 @@ async function confirmarGuardadoMasivo(){
     setStatus(`Generando ${i+1} de ${pendientes.length}: ${eq.tipo}…`);
     try{
       const fechaAntes = eq.informeOficialMarca;
-      await generarInformeOficial(eq.id, folderId);
+      // los tensiómetros con toma de medidas van a su carpeta por marca, no a la del cliente
+      await generarInformeOficial(eq.id, esTipoTens(eq.tipo) ? await carpetaClienteDe(eq) : folderId);
       if(eq.informeOficialGenerado && eq.informeOficialMarca !== fechaAntes) ok++;
       else fallidos.push(eq.tipo);
     }catch(err){
@@ -3168,7 +3422,7 @@ async function prepararGuardado(id){
   if(eq && !eq.informeNo){
     if(!confirm('No escribiste el "Informe No." para este equipo — el archivo y el documento van a quedar sin ese número. ¿Continuar de todas formas?')) return;
   }
-  if(eq && eq.observaciones){
+  if(eq && eq.observaciones && !esTipoTens(eq.tipo)){
     eq._mantenerObservacionFija = confirm(
       '¿La observación "Equipo en buen estado físico y funcional." se debe mantener además de lo que escribiste?\n\n' +
       'Aceptar = se mantiene esa frase y se agrega lo tuyo debajo (equipo quedó bien).\n' +
@@ -3178,7 +3432,7 @@ async function prepararGuardado(id){
   confirmacionCarpeta[id] = { cargando: true, opciones: null, elegida: null, buscando: false, filtro: '', navPila: null };
   render();
   try{
-    const folderId = await encontrarOCrearCarpetaCliente(state.cliente.nombre);
+    const folderId = await carpetaClienteDe(eq);
     const nombre = await obtenerNombreCarpeta(folderId);
     confirmacionCarpeta[id] = { cargando: false, opciones: null, elegida: { id: folderId, nombre }, buscando: false, filtro: '', navPila: null };
   }catch(err){
@@ -3408,7 +3662,7 @@ async function generarInformeOficial(id, folderId){
     await aplicarCambiosEnSheet(sheetFile.id, grid.sheetId, cambios);
 
     setStatus('Generando PDF…');
-    const pdfBlob = await exportarComoPdf(sheetFile.id, grid.sheetId, eq.responsable);
+    const pdfBlob = await exportarComoPdf(sheetFile.id, grid.sheetId, eq.responsable, esTipoTens(eq.tipo));
     const url = URL.createObjectURL(pdfBlob);
     window.open(url, '_blank');
 
@@ -3566,6 +3820,19 @@ function wireCommonHandlers(){
     }
   });
 
+  // Toma de medidas del tensiómetro: evaluación en vivo
+  if(app.querySelector('.tens-in')){
+    app.querySelectorAll('.tens-in').forEach(elm => elm.addEventListener('input', () => {
+      const m = /^draft\.tensMedidas\.(\d+)\.(p\w+)$/.exec(elm.dataset.path);
+      if(m && +m[1] % 2 === 0){ // el patrón de la 1.ª lectura se copia a la 2.ª
+        const otro = app.querySelector('[data-path="draft.tensMedidas.' + (+m[1] + 1) + '.' + m[2] + '"]');
+        if(otro) otro.value = elm.value;
+      }
+      actualizarTensEval();
+    }));
+    actualizarTensEval();
+  }
+
   // Botones de dictado
   app.querySelectorAll('[data-mic-path]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -3685,7 +3952,7 @@ function onAppClick(e){
         // si el número actual no corresponde al nuevo tipo, se ofrece el consecutivo correcto.
         const d = state.draft, actual = String(d.informeNo || '').trim().toUpperCase();
         const letra = v === 'Correctivo' ? 'C' : v === 'Diagnóstico' ? 'D' : '';
-        const correcto = letra ? actual.startsWith(letra + '-') : !!parseInformeNo(actual);
+        const correcto = esTipoTens(d.tipo) ? !!parseInformeT(actual) : (letra ? actual.startsWith(letra + '-') : !!parseInformeNo(actual));
         if(!correcto){
           const nuevo = informeNoParaTipo(v);
           if(nuevo && confirm('Este equipo tenía el informe No. ' + (actual || '(sin número)') + '.\n\nComo ahora es ' + v.toLowerCase() + ', le corresponde el No. ' + nuevo + '.\n\nAceptar = usar ' + nuevo + '\nCancelar = dejar el número anterior')){
