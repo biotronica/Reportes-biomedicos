@@ -3306,18 +3306,17 @@ async function generarInformeOficial(id, folderId){
     const nombreSubcarpetaTecnico = parseInformeCD(eq.informeNo)
       ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
       : (numeroReporteEsImpar(eq.informeNo) ? 'Ramiro' : 'Evelyn');
-    const carpetaTecnicoId = await encontrarOCrearSubcarpeta(carpetaReportesId, nombreSubcarpetaTecnico);
-
-    // Dentro de Ramiro/Evelyn, los archivos se organizan por año y luego por mes
-    // (según la fecha de la visita) — si esas carpetas ya existen, simplemente se
-    // depositan ahí.
-    const carpetaAnioId = await encontrarOCrearSubcarpeta(carpetaTecnicoId, nombreAnioVisita());
-    const carpetaMesId = await encontrarOCrearSubcarpeta(carpetaAnioId, nombreMesVisita());
+    // Orden de carpetas: Reportes › Año › Mes › Ramiro|Evelyn (según la fecha de la visita).
+    // Si ya existen, simplemente se depositan ahí. El Excel queda en la carpeta del técnico
+    // y el PDF en su subcarpeta "PDF".
+    const carpetaAnioId = await encontrarOCrearSubcarpeta(carpetaReportesId, nombreAnioVisita());
+    const carpetaMesVisitaId = await encontrarOCrearSubcarpeta(carpetaAnioId, nombreMesVisita());
+    const carpetaMesId = await encontrarOCrearSubcarpeta(carpetaMesVisitaId, nombreSubcarpetaTecnico);
 
     const carpetaPdfId = await encontrarOCrearSubcarpeta(carpetaMesId, 'PDF');
     const pdfFile = await subirArchivoBinario(pdfBlob, nombre + '.pdf', 'application/pdf', carpetaPdfId);
 
-    // Los informes individuales solo van dentro de Reportes/Ramiro|Evelyn — la
+    // Los informes individuales solo van dentro de Reportes/Año/Mes/Ramiro|Evelyn — la
     // carpeta "Entrega documentos" es exclusivamente para el acta de entrega.
 
     setStatus('Guardando copia en Excel…');
