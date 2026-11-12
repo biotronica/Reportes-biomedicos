@@ -1041,16 +1041,24 @@ function cancelarActaEntrega(){
 // numera los ítems de forma continua a lo largo de toda la tabla.
 // 'correctivo' (incluye diagnóstico) o 'preventivo' (preventivo y predictivo).
 function grupoMantenimientoActa(eq){
-  return (eq.tipoMantenimiento === 'Correctivo' || eq.tipoMantenimiento === 'Diagnóstico') ? 'correctivo' : 'preventivo';
+  if(eq.tipoMantenimiento === 'Diagnóstico') return 'diagnostico';
+  if(eq.tipoMantenimiento === 'Correctivo') return 'correctivo';
+  return 'preventivo';
 }
+// Texto de la "Ref." y de la frase de cada relación del acta, según el tipo de reporte entregado.
+const TEXTOS_ACTA = {
+  preventivo:  { ref: 'mantenimiento preventivo', frase: 'reportes de mantenimiento de los siguientes equipos' },
+  correctivo:  { ref: 'mantenimiento correctivo', frase: 'reportes de mantenimiento correctivo de los siguientes equipos' },
+  diagnostico: { ref: 'diagnóstico', frase: 'reportes de diagnóstico de los siguientes equipos' }
+};
 // Una relación por servicio: preventivo primero, luego correctivo. Cada tabla numera desde 1.
 function seccionesActa(){
   const out = [];
-  ['preventivo', 'correctivo'].forEach(g => {
+  ['preventivo', 'correctivo', 'diagnostico'].forEach(g => {
     const filas = equiposAgrupadosParaActa(g);
-    if(filas.length) out.push({ grupo: g, texto: 'mantenimiento ' + g, filas });
+    if(filas.length) out.push({ grupo: g, texto: TEXTOS_ACTA[g].ref, frase: TEXTOS_ACTA[g].frase, filas });
   });
-  if(!out.length) out.push({ grupo: 'preventivo', texto: 'mantenimiento preventivo', filas: [] });
+  if(!out.length) out.push({ grupo: 'preventivo', texto: TEXTOS_ACTA.preventivo.ref, frase: TEXTOS_ACTA.preventivo.frase, filas: [] });
   return out;
 }
 
@@ -1164,7 +1172,7 @@ function generarActaPdfBlob(saludoTexto){
     doc.text('Ref. Reportes de ' + sec.texto, marginX, y);
     y += 8 + gap;
     doc.setFont(undefined, 'italic');
-    const intro = doc.splitTextToSize('A continuación, se relaciona la entrega de reportes de mantenimiento de los siguientes equipos:', pageW - marginX*2);
+    const intro = doc.splitTextToSize('A continuación, se relaciona la entrega de ' + sec.frase + ':', pageW - marginX*2);
     doc.text(intro, marginX, y);
     y += intro.length * 5 + 4 + gap;
     doc.setFont(undefined, 'normal');
@@ -1292,17 +1300,24 @@ async function generarActaEntrega(saludoElegido){
         introXml = xml.slice(inicioPar(kIntro), finPar(kIntro));
       }
       const limpiarIds = (x) => x.replace(/ w14:paraId="[^"]*"/g, '').replace(/ w14:textId="[^"]*"/g, '');
-      const textoRef = (grupo) => refXml.replace('<w:t>mantenimiento preventivo</w:t>', '<w:t>mantenimiento ' + grupo + '</w:t>');
+      const REF_ORIG = '<w:t>mantenimiento preventivo</w:t>';
+      const FRASE_ORIG = '<w:t>reportes de mantenimiento de los siguientes equipos</w:t>';
+      const textoRef = (sec) => refXml.replace(REF_ORIG, '<w:t>' + escapeXml(sec.texto) + '</w:t>');
+      const textoIntro = (sec) => introXml.replace(FRASE_ORIG, '<w:t>' + escapeXml(sec.frase) + '</w:t>');
 
       let idxRefCambiado = false;
       let seccionesXml = construirTabla(secciones[0].filas);
       if(secciones.length > 1 && refXml && introXml){
         const sep = '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="400" w:lineRule="exact"/></w:pPr></w:p>';
         const conInterlineado = (x) => x.replace('<w:pPr>', '<w:pPr><w:spacing w:before="0" w:after="0" w:line="360" w:lineRule="auto"/>');
-        seccionesXml += sep + limpiarIds(conInterlineado(textoRef(secciones[1].grupo))) + limpiarIds(introXml) + construirTabla(secciones[1].filas);
-      }else if(secciones[0].grupo === 'correctivo'){
-        // Solo correctivos: el enunciado de la referencia cambia.
-        xml = xml.replace('<w:t>mantenimiento preventivo</w:t>', '<w:t>mantenimiento correctivo</w:t>');
+        secciones.slice(1).forEach(sec => {
+          seccionesXml += sep + limpiarIds(conInterlineado(textoRef(sec))) + limpiarIds(textoIntro(sec)) + construirTabla(sec.filas);
+        });
+      }
+      // La primera relación usa los párrafos de la plantilla: su Ref. y su frase se ajustan al tipo.
+      if(secciones[0].grupo !== 'preventivo'){
+        xml = xml.replace(REF_ORIG, '<w:t>' + escapeXml(secciones[0].texto) + '</w:t>');
+        xml = xml.replace(FRASE_ORIG, '<w:t>' + escapeXml(secciones[0].frase) + '</w:t>');
         idxRefCambiado = true;
       }
 
@@ -2307,7 +2322,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.12-d';
+const APP_VERSION = '2026.11.12-e';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
