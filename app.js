@@ -42,8 +42,24 @@ if(MODO_PRUEBAS){
   });
 }
 
+/* ============== MODO TENSIÓMETROS ==============
+   La Plataforma tiene dos botones: "Reportes de mantenimiento" (?modo=mtto) y "Verificación de
+   tensiómetros digitales" (?modo=tens). En modo tensiómetros cada equipo nuevo ya viene como
+   "Tensiómetro Digital - Toma de medidas" y la visita se guarda aparte de la de mantenimiento. */
+const MODO_TENS = (() => {
+  try{
+    const m = new URLSearchParams(location.search).get('modo');
+    if(m === 'tens') sessionStorage.setItem('rep_modo_tens', '1');
+    if(m === 'mtto') sessionStorage.removeItem('rep_modo_tens');
+    return sessionStorage.getItem('rep_modo_tens') === '1';
+  }catch(e){ return false; }
+})();
+if(MODO_TENS){
+  document.addEventListener('DOMContentLoaded', () => { document.title = 'Verificación de tensiómetros · ' + document.title; });
+}
+
 /* ============== ESTADO ============== */
-const STORAGE_KEY = MODO_PRUEBAS ? 'reportes_intelmedica_state_pruebas' : 'reportes_intelmedica_state_v1';
+const STORAGE_KEY = (MODO_PRUEBAS ? 'reportes_intelmedica_state_pruebas' : 'reportes_intelmedica_state_v1') + (MODO_TENS ? '_tens' : '');
 
 function todayISO(){ return new Date().toISOString().slice(0,10); }
 
@@ -623,6 +639,7 @@ function editarObservacionConsecutivo(){
 function startNewEquipo(){
   state.draft = defaultDraft();
   state.editingId = null;
+  if(MODO_TENS){ pickEquipoTipo(TIPO_TENS); }
   goTo('formEquipo');
 }
 
@@ -699,7 +716,7 @@ function render(){
   if(tb){
     const v = document.createElement('div');
     v.className = 'app-version';
-    v.textContent = 'Reportes Intelmedica · v' + APP_VERSION;
+    v.textContent = (MODO_TENS ? '🩺 Verificación de tensiómetros digitales' : 'Reportes de mantenimiento') + ' · v' + APP_VERSION;
     v.style.cssText = 'font-size:11px;font-weight:600;opacity:.85;text-align:right;margin:-4px 0 4px;letter-spacing:.2px;';
     tb.insertBefore(v, tb.firstChild);
   }
@@ -2644,7 +2661,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.12-g';
+const APP_VERSION = '2026.11.12-h';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
