@@ -323,13 +323,17 @@ async function actualizarInformesUsados(){
     const filas = await leerRangoSheet(id, 'Historial!D2:D10000');
     const usados = new Set();
     filas.forEach(f => { const k = claveInforme(f[0]); if(k) usados.add(k); });
+    const deHistorial = new Set(usados); // el "último" de cada técnico sale solo de informes reales
+    await enviarAnuladosPendientes();
+    try{ (await leerRangoSheet(id, 'Anulados!B2:B5000')).forEach(f => { const k = claveInforme(f[0]); if(k) usados.add(k); }); }catch(e){ /* aún no hay anulados */ }
+    anuladosPendientes().forEach(a => usados.add(a.numero));
     informesUsados = usados;
     try{ localStorage.setItem('rep_informes_usados', JSON.stringify([...usados])); }catch(e){}
     // el mayor de cada línea (impares Ramiro / pares Evelyn) del año en curso pasa al consecutivo
     const c = Object.assign({}, state.consecutivo || {});
     c.max = Object.assign({}, c.max || {});
     const sufijo = c.sufijo || todayISO().slice(2, 4);
-    usados.forEach(k => { const p = parseInformeNo(k); if(p && p.sufijo === sufijo && p.numero > (c.max[p.numero % 2] || 0)) c.max[p.numero % 2] = p.numero; });
+    deHistorial.forEach(k => { const p = parseInformeNo(k); if(p && p.sufijo === sufijo && p.numero > (c.max[p.numero % 2] || 0)) c.max[p.numero % 2] = p.numero; });
     if(c.ultimo){ const mx = c.max[c.ultimo % 2]; if(mx && mx > c.ultimo) c.ultimo = mx; }
     state.consecutivo = c;
     // si hay un equipo nuevo en edición con un número que ya está usado, se corrige solo
@@ -340,6 +344,66 @@ async function actualizarInformesUsados(){
     }
     saveState();
   }catch(e){ /* sin conexión: se usa lo que ya se tenía */ }
+}
+// ===== Stickers anulados =====
+// Un número anulado (sticker dañado, informe cambiado a diagnóstico, equipo eliminado…) queda
+// anotado en la pestaña "Anulados" de la Base de Clientes. Cuenta como usado: el consecutivo
+// nunca lo vuelve a dar y la Plataforma lo muestra como anulado (no como faltante).
+const esNumeroSticker = t => !!(parseInformeNo(t) || parseInformeCD(t));
+function anuladosPendientes(){ try{ return JSON.parse(localStorage.getItem('rep_anulados_pend') || '[]'); }catch(e){ return []; } }
+function guardarAnuladosPendientes(a){ try{ localStorage.setItem('rep_anulados_pend', JSON.stringify(a)); }catch(e){} }
+async function asegurarHojaAnulados(id){
+  const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '?fields=sheets.properties.title', { headers: driveHeaders() });
+  if(!res.ok) throw new Error('HTTP ' + res.status);
+  const titulos = ((await res.json()).sheets || []).map(x => x.properties.title);
+  if(titulos.includes('Anulados')) return;
+  await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + ':batchUpdate', {
+    method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
+    body: JSON.stringify({ requests: [{ addSheet: { properties: { title: 'Anulados' } } }] })
+  });
+  await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Anulados!A1:F1?valueInputOption=RAW', {
+    method: 'PUT', headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
+    body: JSON.stringify({ values: [['Fecha', 'Número', 'Motivo', 'Cliente', 'Equipo', 'Anulado por']] })
+  });
+}
+async function enviarAnuladosPendientes(){
+  const pend = anuladosPendientes();
+  if(!pend.length || !state.driveToken) return;
+  try{
+    const id = await obtenerOCrearBaseClientes();
+    await asegurarHojaAnulados(id);
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Anulados!A:F:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS', {
+      method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()),
+      body: JSON.stringify({ values: pend.map(a => [a.fecha, a.numero, a.motivo, a.cliente, a.equipo, a.quien]) })
+    });
+    if(r.ok) guardarAnuladosPendientes([]);
+  }catch(e){ /* sin conexión: se envía en la próxima sincronización */ }
+}
+function anularSticker(numero, motivo, eq){
+  const k = claveInforme(numero);
+  if(!k || !esNumeroSticker(k)) return;
+  informesUsados.add(k);
+  try{ localStorage.setItem('rep_informes_usados', JSON.stringify([...informesUsados])); }catch(e){}
+  const pend = anuladosPendientes().filter(a => a.numero !== k);
+  pend.push({ fecha: todayISO(), numero: k, motivo: motivo || 'Anulado', cliente: (state.cliente && state.cliente.nombre) || '',
+    equipo: eq ? [eq.tipo, eq.serie].filter(Boolean).join(' · ') : '', quien: (eq && eq.responsable) || '' });
+  guardarAnuladosPendientes(pend);
+  enviarAnuladosPendientes();
+}
+
+function anularStickerManual(){
+  const num = prompt('Número del sticker que se anula (ej: 9081-26):', '');
+  if(num === null) return;
+  const k = claveInforme(num);
+  if(!esNumeroSticker(k)){ showToast('Escribe el número con el formato 9081-26, C-261101 o D-261101.'); return; }
+  if(state.equipos.some(e => claveInforme(e.informeNo) === k)){ showToast('Ese número lo tiene un equipo de este reporte: ábrelo y usa Cambiar número.'); return; }
+  const motivo = prompt('Motivo de la anulación (ej: sticker dañado):', 'Sticker dañado');
+  if(motivo === null) return;
+  const quien = numeroReporteEsImpar(k) ? 'Ramiro' : 'Evelyn';
+  anularSticker(k, motivo.trim() || 'Anulado', { tipo: '', serie: '', responsable: parseInformeCD(k) ? '' : quien });
+  // si un equipo nuevo en edición tenía ese número, se le da el siguiente
+  showToast('Sticker ' + k + ' anotado como anulado.' + (state.driveToken ? '' : ' Se envía a Drive al conectar.'));
+  render();
 }
 function siguienteInformeCD(letra){
   const ym = ymVisita();
@@ -422,6 +486,11 @@ function cambiarNumeroInforme(){
   const anterior = d.informeNo;
   d.informeNo = limpio;
   d.numeroCambiado = true;
+  if(anterior && anterior !== limpio && esNumeroSticker(anterior) && !(d._anular && d._anular.numero === anterior)){
+    if(confirm('¿El sticker ' + anterior + ' queda ANULADO?\n\nAceptar = se anota como anulado y no se vuelve a usar.\nCancelar = el número ' + anterior + ' queda libre para otro equipo.')){
+      d._anular = { numero: anterior, motivo: 'Cambio de número (ahora ' + limpio + ')' };
+    }
+  }
   saveState();
   render();
   if(anterior && anterior !== limpio && !d.obsConsecutivo){
@@ -470,6 +539,10 @@ function saveDraft(){
   }
   // El consecutivo sigue desde el número que quedó guardado (nuevo equipo o número cambiado).
   if(!state.editingId || d.numeroCambiado) registrarConsecutivo(d.informeNo);
+  if(d._anular){
+    if(claveInforme(d._anular.numero) !== claveInforme(d.informeNo)) anularSticker(d._anular.numero, d.obsConsecutivo || d._anular.motivo, d);
+    delete d._anular;
+  }
   d.numeroCambiado = false;
   state.draft = null;
   state.editingId = null;
@@ -486,7 +559,13 @@ function deleteEquipo(id){
 }
 
 function deleteDraftEquipo(){
-  if(state.editingId) deleteEquipo(state.editingId);
+  if(state.editingId){
+    const eq = state.equipos.find(e => e.id === state.editingId);
+    if(eq && esNumeroSticker(eq.informeNo) && confirm('El equipo tenía el informe No. ' + eq.informeNo + '.\n\n¿Ese sticker queda ANULADO?\nAceptar = se anota como anulado y no se vuelve a usar.\nCancelar = el número queda libre.')){
+      anularSticker(eq.informeNo, 'Equipo eliminado del reporte', eq);
+    }
+    deleteEquipo(state.editingId);
+  }
   state.draft = null;
   state.editingId = null;
   goTo('equipos');
@@ -767,6 +846,7 @@ function renderEquipos(){
     </div>
     <div class="content">
       ${equiposHtml}
+      <button type="button" class="btn btn-outline btn-sm" style="width:100%;margin-top:8px;" data-action="anularStickerManual">🚫 Anular un sticker (dañado, mal pegado…)</button>
     </div>
     <div class="bottom-bar">
       <div class="bottom-bar-inner" style="flex-direction:column;">
@@ -2322,7 +2402,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.12-e';
+const APP_VERSION = '2026.11.12-f';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -3586,6 +3666,7 @@ function onAppClick(e){
     case 'editarObservacionConsecutivo': editarObservacionConsecutivo(); break;
     case 'cancelForm': cancelForm(); break;
     case 'deleteDraftEquipo': deleteDraftEquipo(); break;
+    case 'anularStickerManual': anularStickerManual(); break;
     case 'crearPin': crearPin(); break;
     case 'intentarPin': intentarPin(); break;
     case 'confirmarResetPin': confirmarResetPin(); break;
@@ -3612,6 +3693,7 @@ function onAppClick(e){
             d.informeNo = nuevo;
             d.numeroCambiado = true;
             if(anterior && !d.obsConsecutivo) d.obsConsecutivo = 'Reemplaza al informe ' + anterior + ' (se cambió a ' + v.toLowerCase() + ')';
+            if(anterior && esNumeroSticker(anterior)) d._anular = { numero: anterior, motivo: 'Se cambió a ' + v.toLowerCase() + ' (ahora ' + nuevo + ')' };
           }
           saveState();
         }
