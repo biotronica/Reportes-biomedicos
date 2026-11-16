@@ -1458,7 +1458,7 @@ function generarActaPdfBlob(saludoTexto){
 
   const encabezados = ['Ítem', 'Numero\nreporte', 'Equipo', 'Serie', 'Inventario'];
   const claves = ['item', 'informeNo', 'tipo', 'serie', 'codigo'];
-  const CENTRADAS = ['item', 'informeNo', 'codigo'];
+  const CENTRADAS = ['item', 'informeNo', 'tipo', 'codigo'];
   const MM_POR_CARACTER = 2.1, RELLENO_MM = 4;
   const alturaFila = 7;
   const alturaFilaEncabezado = 11;
@@ -1573,7 +1573,7 @@ async function generarActaEntrega(saludoElegido){
 
       const encabezados = ['Ítem', 'Numero\nreporte', 'Equipo', 'Serie', 'Inventario'];
       const claves = ['item', 'informeNo', 'tipo', 'serie', 'codigo'];
-      const CENTRADAS = ['item', 'informeNo', 'codigo'];
+      const CENTRADAS = ['item', 'informeNo', 'tipo', 'codigo'];
       const ANCHO_UTIL_PAGINA = 9404; // ancho de página carta menos los márgenes izquierdo/derecho de esta plantilla
       const borde = '<w:top w:val="single" w:sz="4" w:color="999999"/><w:left w:val="single" w:sz="4" w:color="999999"/><w:bottom w:val="single" w:sz="4" w:color="999999"/><w:right w:val="single" w:sz="4" w:color="999999"/><w:insideH w:val="single" w:sz="4" w:color="999999"/><w:insideV w:val="single" w:sz="4" w:color="999999"/>';
 
@@ -2718,7 +2718,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-e';
+const APP_VERSION = '2026.11.16-f';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
