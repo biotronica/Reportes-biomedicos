@@ -671,7 +671,7 @@ function editEquipo(id){
 function saveDraft(){
   const d = state.draft;
   if(!d.tipo){ showToast('Selecciona el tipo de equipo antes de guardar.'); return; }
-  if(esTipoTens(d.tipo) && !buscarFirmaTecnico(d.responsable)){ showToast('Escribe el responsable de la ejecución (Ramiro o Evelyn): su firma va en el informe.'); return; }
+  if(esTipoTens(d.tipo) && !esTecnicoConFirma(d.responsable)){ showToast('Escribe el responsable de la ejecución (Ramiro o Evelyn): su firma va en el informe.'); return; }
   if(!d.tipoMantenimiento){ showToast('Selecciona el tipo de mantenimiento antes de guardar.'); return; }
   if(!d.marca && !d.serie && !d.codigo){ showToast('Agrega al menos marca, serie o código interno.'); return; }
   if((d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') && !String(d.diagnostico || '').trim()){
@@ -1526,7 +1526,7 @@ function generarActaPdfBlob(saludoTexto){
   doc.setFontSize(11);
   doc.text('Cordialmente,', marginX, y);
   y += 4;
-  doc.addImage(FIRMA_RAMIRO_B64, 'PNG', marginX, y, 25, 15);
+  if(PRIV.firmaRamiro) doc.addImage(PRIV.firmaRamiro, 'PNG', marginX, y, 25, 15);
   y += 20;
   doc.text('Ramiro Díaz', marginX, y);
   y += 5;
@@ -1543,9 +1543,7 @@ async function generarActaEntrega(saludoElegido){
   try{
     setStatus('Generando…');
 
-    const res = await fetch('plantilla-acta.docx');
-    if(!res.ok) throw new Error('No se pudo cargar la plantilla del acta (HTTP ' + res.status + ')');
-    const bytesPlantilla = await res.arrayBuffer();
+    const bytesPlantilla = await plantillaPrivadaBytes('plantilla-acta.docx');
     const zip = await JSZip.loadAsync(bytesPlantilla);
     let xml = await zip.file('word/document.xml').async('string');
 
@@ -1704,6 +1702,7 @@ async function generarActaEntrega(saludoElegido){
         await subirArchivoBinario(blob, nombreArchivoActa, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', carpetaEntregaAnioId);
         paso = 'generando y subiendo el PDF del acta';
         const SALUDOS_PDF = { empresa: 'Señores', hombre: 'Señor', mujer: 'Señora', doctor: 'Doctor', doctora: 'Doctora' };
+        await exigirPrivadas();
         const pdfBlobActa = generarActaPdfBlob(SALUDOS_PDF[saludoElegido] || 'Señores');
         const carpetaEntregaPdfId = await encontrarOCrearSubcarpeta(carpetaEntregaAnioId, 'PDF');
         const nombreArchivoActaPdf = nombreArchivoActa.replace(/\.docx$/, '.pdf');
@@ -2194,7 +2193,9 @@ function driveHeaders(){
 async function descargarPlantillaBytes(fileId){
   if(String(fileId).startsWith('LOCAL:')){
     // Plantilla que viaja con la app (ej. tensiómetro con toma de medidas)
-    const r = await fetch(String(fileId).slice(6) + '?v=' + APP_VERSION, { cache: 'no-store' });
+    const nombreLocal = String(fileId).slice(6);
+    if(PLANT_IDS[nombreLocal]) return plantillaPrivadaBytes(nombreLocal);   // lleva firma/sello: va en Drive privado
+    const r = await fetch(nombreLocal + '?v=' + APP_VERSION, { cache: 'no-store' });
     if(!r.ok) throw new Error('No se pudo cargar la plantilla (HTTP ' + r.status + ')');
     return r.arrayBuffer();
   }
@@ -2718,7 +2719,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-g';
+const APP_VERSION = '2026.11.16-h';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -2811,6 +2812,59 @@ async function exportarComoPdf(sheetsFileId, sheetId, nombreResponsable, formato
   return await pegarLogoFirmaSello(bytesOriginales, nombreResponsable, formatoT);
 }
 
+/* ============== FIRMAS Y SELLO (privados) ==============
+   Las firmas manuscritas y el sello ya NO van en el código, porque el repositorio de GitHub es público.
+   Están en una carpeta privada del Drive de la empresa. La app las baja la primera vez que se conecta a
+   Google y las guarda en este dispositivo para poder usarlas después, también sin internet. */
+const PRIV_IDS = { firmaRamiro: '1yS-mTAkM786xQISPUrCo4doz4TccJBZ0', firmaEvelyn: '1gRg1HHag5ThNUfhGxQKsBbbzVKgzbapM', sello: '1Qugqlrsl9QyAFweOE4iPNoA54Abofykm' };
+const PRIV_KEY = 'rep_priv_img_v1';
+let PRIV = (() => { try{ return JSON.parse(localStorage.getItem(PRIV_KEY)) || {}; }catch(e){ return {}; } })();
+const privListas = () => Object.keys(PRIV_IDS).every(k => typeof PRIV[k] === 'string' && PRIV[k].startsWith('data:image/'));
+let privCargando = null;
+function cargarPrivadas(forzar){
+  if(privListas() && !forzar) return Promise.resolve(true);
+  if(!state.driveToken) return Promise.resolve(false);
+  if(privCargando) return privCargando;
+  privCargando = (async () => {
+    try{
+      for(const k of Object.keys(PRIV_IDS)){
+        if(PRIV[k] && !forzar) continue;
+        const r = await fetch('https://www.googleapis.com/drive/v3/files/' + PRIV_IDS[k] + '?alt=media&supportsAllDrives=true', { headers: { Authorization: 'Bearer ' + state.driveToken } });
+        if(!r.ok) throw new Error('HTTP ' + r.status);
+        const blob = await r.blob();
+        PRIV[k] = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).replace(/^data:[^;]*;/, 'data:image/png;')); fr.onerror = rej; fr.readAsDataURL(blob); });
+      }
+      try{ localStorage.setItem(PRIV_KEY, JSON.stringify(PRIV)); }catch(e){}
+    }catch(e){ console.warn('firmas privadas', e); }
+    privCargando = null;
+    return privListas();
+  })();
+  return privCargando;
+}
+// Plantillas que llevan firma o sello dentro (acta y tensiómetro con toma de medidas): tampoco viajan ya
+// con la app. Se bajan de la misma carpeta privada y quedan guardadas en el dispositivo (Cache 'rep-priv-…').
+const PLANT_IDS = { 'plantilla-acta.docx': '1HhL6ma1F6x_-kFsiTzALgFUb4y_54ijT', 'plantilla-tensiometro-medidas.xlsx': '1O-HMacljWVWJeVTH9J2GzSzWEuU1r8Cl' };
+const PLANT_CACHE = 'rep-priv-plantillas-v1';
+async function plantillaPrivadaBytes(nombre, soloPrecarga){
+  const clave = 'https://privado.local/' + nombre;
+  let cache = null;
+  try{ cache = await caches.open(PLANT_CACHE); const g = await cache.match(clave); if(g){ return soloPrecarga ? null : g.arrayBuffer(); } }catch(e){}
+  if(!state.driveToken){ if(soloPrecarga) return null; throw new Error('conéctese a Google Drive una vez para bajar la plantilla (' + nombre + ')'); }
+  const r = await fetch('https://www.googleapis.com/drive/v3/files/' + PLANT_IDS[nombre] + '?alt=media&supportsAllDrives=true', { headers: { Authorization: 'Bearer ' + state.driveToken } });
+  if(!r.ok){ if(soloPrecarga) return null; throw new Error('no se pudo bajar la plantilla ' + nombre + ' desde Drive (HTTP ' + r.status + ')'); }
+  const bytes = await r.arrayBuffer();
+  try{ if(cache) await cache.put(clave, new Response(bytes.slice(0))); }catch(e){}
+  return bytes;
+}
+function precargarPrivado(){
+  cargarPrivadas();
+  Object.keys(PLANT_IDS).forEach(n => { plantillaPrivadaBytes(n, true).catch(() => {}); });
+}
+async function exigirPrivadas(){
+  if(await cargarPrivadas()) return;
+  throw new Error('no se pudieron bajar las firmas y el sello desde Drive. Conéctese con la cuenta de la empresa e intente de nuevo');
+}
+
 function base64ADatos(dataUri){
   const base64 = dataUri.split(',')[1];
   const binario = atob(base64);
@@ -2824,11 +2878,11 @@ function base64ADatos(dataUri){
 // escrito en "Responsable(s) ejecución"; si no coincide con ninguno, no se pega
 // ninguna firma ahí (para no poner una firma que no corresponde).
 const FIRMAS_TECNICOS = [
-  { nombre: 'ramiro a. diaz', b64: () => FIRMA_RAMIRO_B64 },
-  { nombre: 'ramiro diaz', b64: () => FIRMA_RAMIRO_B64 },
-  { nombre: 'ramiro', b64: () => FIRMA_RAMIRO_B64 },
-  { nombre: 'evelyn ramos', b64: () => FIRMA_EVELYN_B64 },
-  { nombre: 'evelyn', b64: () => FIRMA_EVELYN_B64 }
+  { nombre: 'ramiro a. diaz', b64: () => PRIV.firmaRamiro },
+  { nombre: 'ramiro diaz', b64: () => PRIV.firmaRamiro },
+  { nombre: 'ramiro', b64: () => PRIV.firmaRamiro },
+  { nombre: 'evelyn ramos', b64: () => PRIV.firmaEvelyn },
+  { nombre: 'evelyn', b64: () => PRIV.firmaEvelyn }
 ];
 
 function buscarFirmaTecnico(nombre){
@@ -2836,6 +2890,11 @@ function buscarFirmaTecnico(nombre){
   if(!clave) return null;
   const encontrado = FIRMAS_TECNICOS.find(t => clave.includes(t.nombre) || t.nombre.includes(clave));
   return encontrado ? encontrado.b64() : null;
+}
+// ¿El nombre corresponde a un técnico con firma? (no depende de que la imagen ya se haya bajado)
+function esTecnicoConFirma(nombre){
+  const clave = normNombre(nombre || '');
+  return !!clave && FIRMAS_TECNICOS.some(t => clave.includes(t.nombre) || t.nombre.includes(clave));
 }
 
 // La conversión de Excel a Google Sheets (necesaria para poder llenar los datos)
@@ -2874,10 +2933,11 @@ async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable, format
   const logoImg = await pdfDoc.embedJpg(base64ADatos(LOGO_INTELMEDICA_B64));
   pagina.drawImage(logoImg, pos(43, 737, 134, 34));
 
-  const selloImg = await pdfDoc.embedPng(base64ADatos(SELLO_INTELMEDICA_B64));
+  await exigirPrivadas();
+  const selloImg = await pdfDoc.embedPng(base64ADatos(PRIV.sello));
   pagina.drawImage(selloImg, pos(208, 66, 88, 31));
 
-  const firmaCoordinadorImg = await pdfDoc.embedPng(base64ADatos(FIRMA_RAMIRO_B64));
+  const firmaCoordinadorImg = await pdfDoc.embedPng(base64ADatos(PRIV.firmaRamiro));
   pagina.drawImage(firmaCoordinadorImg, pos(310, 65, 62, 38));
 
   // Firma de quien ejecutó el mantenimiento, bajo "Responsable(s) ejecución" — misma
@@ -3830,6 +3890,7 @@ function initGoogle(){
         try{ sessionStorage.setItem('rep_tok', JSON.stringify({ tok: state.driveToken, exp: state.driveExpiry })); }catch(e){}
         render();
         showToast('Conectado a Google Drive.');
+        precargarPrivado();
         revisarSincronizacionRemota();
       });
     }
@@ -4121,4 +4182,4 @@ function tomarConexionDePlataforma(){
 const conexionHeredada = tomarConexionDePlataforma();
 initGoogle();
 render();
-if(conexionHeredada){ setTimeout(() => { revisarSincronizacionRemota().catch(()=>{}); }, 300); }
+if(conexionHeredada){ setTimeout(() => { precargarPrivado(); revisarSincronizacionRemota().catch(()=>{}); }, 300); }
