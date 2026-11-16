@@ -1367,7 +1367,8 @@ function equiposAgrupadosParaActa(grupo){
   const grupos = {};
   state.equipos.forEach(eq => {
     if(grupo && grupoMantenimientoActa(eq) !== grupo) return;
-    const clave = eq.tipo || 'Sin tipo';
+    // en el acta los tensiómetros con toma de medidas salen solo como "Tensiómetro digital"
+    const clave = esTipoTens(eq.tipo) ? 'Tensiómetro digital' : (eq.tipo || 'Sin tipo');
     if(!grupos[clave]) grupos[clave] = [];
     grupos[clave].push(eq);
   });
@@ -2717,7 +2718,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-d';
+const APP_VERSION = '2026.11.16-e';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
