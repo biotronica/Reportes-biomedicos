@@ -1347,12 +1347,17 @@ const TEXTOS_ACTA = {
   correctivo:  { ref: 'mantenimiento correctivo', frase: 'reportes de mantenimiento correctivo de los siguientes equipos' },
   diagnostico: { ref: 'diagnóstico', frase: 'reportes de diagnóstico de los siguientes equipos' }
 };
+// Con un solo equipo la frase va en singular: "…del reporte de mantenimiento del siguiente equipo:".
+function fraseActaSingular(frase){
+  return frase.replace(/^reportes /, 'reporte ').replace(/de los siguientes equipos$/, 'del siguiente equipo');
+}
 // Una relación por servicio: preventivo primero, luego correctivo. Cada tabla numera desde 1.
 function seccionesActa(){
   const out = [];
   ['preventivo', 'correctivo', 'diagnostico'].forEach(g => {
     const filas = equiposAgrupadosParaActa(g);
-    if(filas.length) out.push({ grupo: g, texto: TEXTOS_ACTA[g].ref, frase: TEXTOS_ACTA[g].frase, filas });
+    const uno = filas.length === 1;
+    if(filas.length) out.push({ grupo: g, texto: TEXTOS_ACTA[g].ref, frase: uno ? fraseActaSingular(TEXTOS_ACTA[g].frase) : TEXTOS_ACTA[g].frase, singular: uno, filas });
   });
   if(!out.length) out.push({ grupo: 'preventivo', texto: TEXTOS_ACTA.preventivo.ref, frase: TEXTOS_ACTA.preventivo.frase, filas: [] });
   return out;
@@ -1468,7 +1473,7 @@ function generarActaPdfBlob(saludoTexto){
     doc.text('Ref. Reportes de ' + sec.texto, marginX, y);
     y += 8 + gap;
     doc.setFont(undefined, 'italic');
-    const intro = doc.splitTextToSize('A continuación, se relaciona la entrega de ' + sec.frase + ':', pageW - marginX*2);
+    const intro = doc.splitTextToSize('A continuación, se relaciona la entrega ' + (sec.singular ? 'del ' : 'de ') + sec.frase + ':', pageW - marginX*2);
     doc.text(intro, marginX, y);
     y += intro.length * 5 + 4 + gap;
     doc.setFont(undefined, 'normal');
@@ -1599,7 +1604,9 @@ async function generarActaEntrega(saludoElegido){
       const REF_ORIG = '<w:t>mantenimiento preventivo</w:t>';
       const FRASE_ORIG = '<w:t>reportes de mantenimiento de los siguientes equipos</w:t>';
       const textoRef = (sec) => refXml.replace(REF_ORIG, '<w:t>' + escapeXml(sec.texto) + '</w:t>');
-      const textoIntro = (sec) => introXml.replace(FRASE_ORIG, '<w:t>' + escapeXml(sec.frase) + '</w:t>');
+      const ENTREGA_DE = '<w:t xml:space="preserve"> se relaciona la entrega de </w:t>';
+      const ENTREGA_DEL = '<w:t xml:space="preserve"> se relaciona la entrega del </w:t>';
+      const textoIntro = (sec) => { let x = introXml.replace(FRASE_ORIG, '<w:t>' + escapeXml(sec.frase) + '</w:t>'); if(sec.singular) x = x.replace(ENTREGA_DE, ENTREGA_DEL); return x; };
 
       let idxRefCambiado = false;
       let seccionesXml = construirTabla(secciones[0].filas);
@@ -1613,14 +1620,20 @@ async function generarActaEntrega(saludoElegido){
       // La primera relación usa los párrafos de la plantilla: su Ref. y su frase se ajustan al tipo.
       if(secciones[0].grupo !== 'preventivo'){
         xml = xml.replace(REF_ORIG, '<w:t>' + escapeXml(secciones[0].texto) + '</w:t>');
-        xml = xml.replace(FRASE_ORIG, '<w:t>' + escapeXml(secciones[0].frase) + '</w:t>');
         idxRefCambiado = true;
       }
+      if(secciones[0].frase !== TEXTOS_ACTA.preventivo.frase){
+        xml = xml.replace(FRASE_ORIG, '<w:t>' + escapeXml(secciones[0].frase) + '</w:t>');
+      }
+      if(secciones[0].singular) xml = xml.replace(ENTREGA_DE, ENTREGA_DEL);
+      // el marcador del inicio de la tabla cambia si la frase quedó en singular
+      const colaMarcador = marcadorInicio.slice('siguientes equipos'.length);
+      const marcadorInicioUsado = escapeXml(secciones[0].frase).replace(/^.*(siguientes? equipos?)$/, '$1') + colaMarcador;
 
       // (índices recalculados por si el reemplazo anterior cambió la longitud)
-      const idxInicio2 = xml.indexOf(marcadorInicio);
+      const idxInicio2 = xml.indexOf(marcadorInicioUsado);
       const idxCordialmente2 = xml.indexOf('<w:t>Cordialmente,</w:t>');
-      const idxInicioTabla2 = idxInicio2 + marcadorInicio.length;
+      const idxInicioTabla2 = idxInicio2 + marcadorInicioUsado.length;
       const idxFinParrafo2 = xml.lastIndexOf('<w:p ', idxCordialmente2);
       xml = xml.slice(0, idxInicioTabla2) + seccionesXml + xml.slice(idxFinParrafo2);
       var hayDosSecciones = secciones.length > 1;
@@ -2704,7 +2717,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-c';
+const APP_VERSION = '2026.11.16-d';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
