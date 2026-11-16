@@ -2718,7 +2718,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-f';
+const APP_VERSION = '2026.11.16-g';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -3817,12 +3817,21 @@ function initGoogle(){
     scope: CONFIG.DRIVE_SCOPE,
     callback: (resp) => {
       if(resp.error){ showToast('No se pudo conectar con Google Drive.'); return; }
-      state.driveToken = resp.access_token;
-      state.driveExpiry = Date.now() + ((resp.expires_in||3500)*1000);
-      try{ sessionStorage.setItem('rep_tok', JSON.stringify({ tok: state.driveToken, exp: state.driveExpiry })); }catch(e){}
-      render();
-      showToast('Conectado a Google Drive.');
-      revisarSincronizacionRemota();
+      // Solo cuentas autorizadas (la lista la mantiene la Plataforma en su pestaña "Accesos")
+      const tokNuevo = resp.access_token;
+      cuentaAutorizada(tokNuevo).then(ok => {
+        if(!ok){
+          try{ google.accounts.oauth2.revoke(tokNuevo, () => {}); }catch(e){}
+          showToast('Esta cuenta de Google no está autorizada para usar Reportes.');
+          return;
+        }
+        state.driveToken = tokNuevo;
+        state.driveExpiry = Date.now() + ((resp.expires_in||3500)*1000);
+        try{ sessionStorage.setItem('rep_tok', JSON.stringify({ tok: state.driveToken, exp: state.driveExpiry })); }catch(e){}
+        render();
+        showToast('Conectado a Google Drive.');
+        revisarSincronizacionRemota();
+      });
     }
   });
 }
@@ -4079,6 +4088,19 @@ if('serviceWorker' in navigator){
 // Conexión a Drive heredada de la Plataforma Biomédica: al abrir Reportes desde la Plataforma
 // llega el permiso en el #fragmento de la dirección, así no hay que volver a conectar aquí.
 // Se guarda solo en esta pestaña (sessionStorage) y se borra de la dirección enseguida.
+// Comprueba la cuenta contra la lista que guardó la Plataforma en este dispositivo.
+// Si la Plataforma aún no la ha guardado (dispositivo nuevo), se deja pasar: el acceso
+// real a los datos lo sigue controlando lo que esté compartido en Drive.
+async function cuentaAutorizada(tok){
+  let lista = null;
+  try{ lista = JSON.parse(localStorage.getItem('intel_accesos') || 'null'); }catch(e){}
+  if(!Array.isArray(lista) || !lista.length) return true;
+  try{
+    const r = await fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)', { headers: { Authorization: 'Bearer ' + tok } });
+    const correo = String(((await r.json()).user || {}).emailAddress || '').toLowerCase();
+    return lista.includes(correo);
+  }catch(e){ return false; }
+}
 function tomarConexionDePlataforma(){
   try{
     const h = new URLSearchParams((location.hash || '').replace(/^#/, ''));

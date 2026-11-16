@@ -1,4 +1,4 @@
-const CACHE_NAME = 'reportes-intelmedica-v15';
+const CACHE_NAME = 'reportes-intelmedica-v16';
 const ASSETS = [
   './',
   './index.html',
