@@ -654,6 +654,7 @@ function editEquipo(id){
 function saveDraft(){
   const d = state.draft;
   if(!d.tipo){ showToast('Selecciona el tipo de equipo antes de guardar.'); return; }
+  if(esTipoTens(d.tipo) && !buscarFirmaTecnico(d.responsable)){ showToast('Escribe el responsable de la ejecución (Ramiro o Evelyn): su firma va en el informe.'); return; }
   if(!d.tipoMantenimiento){ showToast('Selecciona el tipo de mantenimiento antes de guardar.'); return; }
   if(!d.marca && !d.serie && !d.codigo){ showToast('Agrega al menos marca, serie o código interno.'); return; }
   if((d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') && !String(d.diagnostico || '').trim()){
@@ -2661,13 +2662,14 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.12-h';
+const APP_VERSION = '2026.11.16-a';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
     : (numeroReporteEsImpar(eq.informeNo) ? 'Ramiro' : 'Evelyn');
 }
 function rutaInformeTexto(eq){
+  if(esTipoTens(eq.tipo)) return 'TENSIOMETROS DIGITALES › ' + (String(eq.marca || '').toUpperCase() || 'MARCA') + ' (u OTROS)' + ' › Cliente › Reportes › ' + nombreAnioVisita() + ' › ' + nombreMesVisita();
   return 'Reportes › ' + nombreAnioVisita() + ' › ' + nombreMesVisita() + ' › ' + carpetaTecnicoDe(eq);
 }
 function nombreAnioVisita(){
@@ -3694,7 +3696,8 @@ async function generarInformeOficial(id, folderId){
     // y el PDF en su subcarpeta "PDF".
     const carpetaAnioId = await encontrarOCrearSubcarpeta(carpetaReportesId, nombreAnioVisita());
     const carpetaMesVisitaId = await encontrarOCrearSubcarpeta(carpetaAnioId, nombreMesVisita());
-    const carpetaMesId = await encontrarOCrearSubcarpeta(carpetaMesVisitaId, nombreSubcarpetaTecnico);
+    // Informes T (tensiómetros): una sola carpeta para Ramiro y Evelyn, sin subcarpeta de técnico.
+    const carpetaMesId = esTipoTens(eq.tipo) ? carpetaMesVisitaId : await encontrarOCrearSubcarpeta(carpetaMesVisitaId, nombreSubcarpetaTecnico);
 
     const carpetaPdfId = await encontrarOCrearSubcarpeta(carpetaMesId, 'PDF');
     const pdfFile = await subirArchivoBinario(pdfBlob, nombre + '.pdf', 'application/pdf', carpetaPdfId);
