@@ -2355,7 +2355,7 @@ function agregarCampoDebajo(grid, cambios, clave, valorAdicional){
 // Se deja un margen para que la última palabra nunca quede cortada en el borde.
 const ANCHO_FILA_PX = 725;
 const SANGRIA_CONTINUACION = '      ';
-const ANCHO_FILA_TENS_PX = 880; // las filas que continúan un mismo renglón van con sangría
+const ANCHO_FILA_TENS_PX = 900; // medido en el informe real: la fila B:Z mide ~908 px de texto // las filas que continúan un mismo renglón van con sangría
 let _ctxMedida = null;
 function anchoTextoPx(t){
   try{
@@ -2371,25 +2371,30 @@ function dividirEnFilasConSangria(texto, anchoMax){
   String(texto || '').split('\n').forEach(parrafo => {
     const palabras = parrafo.trim().split(/\s+/).filter(Boolean);
     if(!palabras.length) return;
+    // Si el renglón empieza con viñeta ("* ", "- ", "• "), la fila que continúa empieza justo
+    // debajo de la primera letra del texto (sangría francesa); si no, sangría fija.
+    let sangria = SANGRIA_CONTINUACION;
+    if(palabras.length > 1 && /^[*•-]$/.test(palabras[0])){
+      const n = Math.max(1, Math.round(anchoTextoPx(palabras[0] + ' ') / anchoTextoPx(' ')));
+      sangria = ' '.repeat(n);
+    }
     let actual = '';
     palabras.forEach(palabra => {
-      const prefijo = actual ? actual + ' ' : (filas.length && filas._continua ? SANGRIA_CONTINUACION : '');
-      let propuesta = prefijo + palabra;
+      let propuesta = actual ? actual + ' ' + palabra : palabra;
       if(anchoTextoPx(propuesta) <= ANCHO){ actual = propuesta; return; }
-      if(actual){ filas.push(actual); filas._continua = true; propuesta = SANGRIA_CONTINUACION + palabra; }
+      if(actual){ filas.push(actual); propuesta = sangria + palabra; }
       // palabra demasiado larga para una fila: se corta por caracteres
       while(anchoTextoPx(propuesta) > ANCHO){
         let n = propuesta.length - 1;
-        while(n > SANGRIA_CONTINUACION.length + 1 && anchoTextoPx(propuesta.slice(0, n)) > ANCHO) n--;
-        filas.push(propuesta.slice(0, n)); filas._continua = true;
-        propuesta = SANGRIA_CONTINUACION + propuesta.slice(n);
+        while(n > sangria.length + 1 && anchoTextoPx(propuesta.slice(0, n)) > ANCHO) n--;
+        filas.push(propuesta.slice(0, n));
+        propuesta = sangria + propuesta.slice(n);
       }
       actual = propuesta;
     });
     if(actual) filas.push(actual);
-    filas._continua = false;
   });
-  return filas.slice();
+  return filas;
 }
 
 function dividirEnFilas(texto, maxCaracteresPorFila){
@@ -2519,6 +2524,8 @@ function calcularCambiosTens(grid, equipo, cliente){
   for(let i = 0; i < 11; i++) poner(50 + i, 1, lineas[i] || '', lineas[i] ? { horizontalAlignment: 'LEFT' } : null);
   poner(65, 2, equipo.responsable);
   poner(65, 19, equipo.recibeSatisfaccion);
+  // fila en blanco entre la tabla de medidas y OBSERVACIONES (se inserta al final, después de escribir)
+  cambios.push({ insertarFilaAntesDe: 49, alto: 10 });
   return cambios;
 }
 
@@ -2565,6 +2572,8 @@ function calcularCambiosPlantilla(grid, equipo, cliente){
 // para que solo se toque el contenido de cada celda — el formato original queda intacto.
 async function aplicarCambiosEnSheet(spreadsheetId, sheetId, cambios){
   if(!cambios.length) return;
+  const inserciones = cambios.filter(c => c.insertarFilaAntesDe != null);
+  cambios = cambios.filter(c => c.insertarFilaAntesDe == null);
   const requests = cambios.map(cambio => {
     const celda = { userEnteredValue: { stringValue: cambio.value } };
     let fields = 'userEnteredValue';
@@ -2585,6 +2594,14 @@ async function aplicarCambiosEnSheet(spreadsheetId, sheetId, cambios){
         fields
       }
     };
+  });
+  // filas nuevas al final, de abajo hacia arriba, para no correr las celdas ya escritas
+  inserciones.sort((a, b) => b.insertarFilaAntesDe - a.insertarFilaAntesDe).forEach(f => {
+    const rango = { sheetId, dimension: 'ROWS', startIndex: f.insertarFilaAntesDe, endIndex: f.insertarFilaAntesDe + 1 };
+    // hereda el formato de la fila de arriba (marco del formulario en A y AA:AB) y se limpia B:Z
+    requests.push({ insertDimension: { range: rango, inheritFromBefore: true } });
+    requests.push({ updateDimensionProperties: { range: rango, properties: { pixelSize: f.alto || 10 }, fields: 'pixelSize' } });
+    requests.push({ repeatCell: { range: { sheetId, startRowIndex: f.insertarFilaAntesDe, endRowIndex: f.insertarFilaAntesDe + 1, startColumnIndex: 1, endColumnIndex: 26 }, cell: { userEnteredFormat: {} }, fields: 'userEnteredFormat' } });
   });
   const res = await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId + ':batchUpdate', {
     method: 'POST',
@@ -2687,7 +2704,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-b';
+const APP_VERSION = '2026.11.16-c';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -2834,8 +2851,8 @@ async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable, format
     const base = pos;
     pos = (x, y, w, h) => {
       const nx = M + (x - M) * k, nw = w * k, nh = h * k;
-      // las firmas y el sello bajan 16 pt para quedar sobre la línea "Firma(s)" (medido en un informe real)
-      const ny = y > 400 ? TOP - (TOP - (y + h)) * k - nh : M + (y - M) * k - 16;
+      // las firmas y el sello bajan 30 pt para quedar sobre la línea "Firma(s)" (medido en un informe real)
+      const ny = y > 400 ? TOP - (TOP - (y + h)) * k - nh : M + (y - M) * k - 30;
       return base(nx, ny, nw, nh);
     };
   }
