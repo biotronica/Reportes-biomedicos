@@ -518,13 +518,30 @@ function tensObservaciones(eq){
 }
 // Texto de las celdas de lectura, con los espacios del formato original para que quede
 // alineado bajo "PRESIÓN (mmHg)" y "FREC. (Puls Min)".
-function tensCelda(sis, dia, pul, equipo){
+// La celda va CENTRADA y su texto mide lo mismo que el encabezado "PRESIÓN (mmHg)          FREC. (Puls Min)":
+// así la presión queda centrada bajo PRESIÓN y el pulso bajo FREC. (Arial 8).
+const TENS_ENCABEZADO = 'PRESIÓN (mmHg)          FREC. (Puls Min)';
+function anchoArial8(t){
+  try{
+    if(!anchoArial8.ctx){ anchoArial8.ctx = document.createElement('canvas').getContext('2d'); anchoArial8.ctx.font = '10.667px Arial, "Liberation Sans", Helvetica, sans-serif'; }
+    return anchoArial8.ctx.measureText(t).width;
+  }catch(e){ return String(t).length * 5.6; }
+}
+function tensCelda(sis, dia, pul){
   const pres = (sis || dia) ? String(sis || '') + '/' + String(dia || '') : '';
   const p = String(pul || '');
   if(!pres && !p) return '';
-  const lead = Math.max(2, (equipo ? 33 : 28) - 2 * pres.length);
-  const gap = Math.max(4, 37 - pres.length - Math.max(0, p.length - 2));
-  return ' '.repeat(lead) + pres + ' '.repeat(gap) + p;
+  const esp = anchoArial8(' ');
+  const segP = anchoArial8('PRESIÓN (mmHg)'), segG = anchoArial8('          '), segF = anchoArial8('FREC. (Puls Min)');
+  const total = segP + segG + segF;
+  const cP = segP / 2, cF = segP + segG + segF / 2;
+  let txt = '', x = 0;
+  // espacios duros (\u00A0): Sheets no los recorta, así el centrado respeta también los del final
+  const hasta = objetivo => { const n = Math.max(0, Math.round((objetivo - x) / esp)); txt += '\u00A0'.repeat(n); x += n * esp; };
+  if(pres){ hasta(cP - anchoArial8(pres) / 2); txt += pres; x += anchoArial8(pres); }
+  if(p){ hasta(Math.max(x + esp, cF - anchoArial8(p) / 2)); txt += p; x += anchoArial8(p); }
+  hasta(total);
+  return txt;
 }
 function parseInformeT(txt){
   const m = /^\s*T\s*(\d+)\s*[-–—]\s*(\d+)\s*$/i.exec(String(txt || ''));
@@ -1144,13 +1161,13 @@ function tensCardHtml(d){
   const filas = TENS_RANGOS.map((r, ri) => {
     const idx = [ri * 2, ri * 2 + 1];
     return `<div style="margin:10px 0 4px;font-weight:700;font-size:13px;color:var(--primary,#0a1f8f);">${r.nombre}</div>
-      <div style="display:flex;gap:4px;align-items:center;font-size:12px;color:var(--text-muted);margin-bottom:4px;">
-        <span style="width:86px;">Patrón</span><span>Sist. / Diast. · Pulso</span></div>
+      <div style="display:flex;gap:4px;align-items:flex-end;font-size:12px;color:var(--text-muted);margin-bottom:2px;">
+        <span style="width:62px;"></span><span style="width:46px;text-align:center;">Sist.</span><span style="width:6px;"></span><span style="width:46px;text-align:center;">Diast.</span><span style="width:6px;"></span><span style="width:46px;text-align:center;">Pulso</span></div>
       <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px;">
-        <span style="width:86px;font-size:12px;">mmHg · ppm</span>${inp(idx[0],'pSis','S',46)}/${inp(idx[0],'pDia','D',46)}·${inp(idx[0],'pPul','P',46)}
+        <span style="width:62px;font-size:12px;font-weight:600;">Patrón</span>${inp(idx[0],'pSis','',46)}<span style="width:6px;text-align:center;">/</span>${inp(idx[0],'pDia','',46)}<span style="width:6px;text-align:center;">·</span>${inp(idx[0],'pPul','',46)}
       </div>
       ${idx.map((i, k) => `<div style="display:flex;gap:4px;align-items:center;margin-bottom:4px;">
-        <span style="width:86px;font-size:12px;">Equipo ${k + 1}</span>${inp(i,'sis','S',46)}/${inp(i,'dia','D',46)}·${inp(i,'pul','P',46)}
+        <span style="width:62px;font-size:12px;font-weight:600;">M${k + 1}</span>${inp(i,'sis','',46)}<span style="width:6px;text-align:center;">/</span>${inp(i,'dia','',46)}<span style="width:6px;text-align:center;">·</span>${inp(i,'pul','',46)}
         <span class="tens-dif" data-i="${i}" style="font-size:12px;margin-left:4px;"></span></div>`).join('')}`;
   }).join('');
   return `
@@ -2337,7 +2354,8 @@ function agregarCampoDebajo(grid, cambios, clave, valorAdicional){
 // Ancho útil de la fila B:S de la plantilla (Arial 10): ~107,7 unidades de Excel ≈ 750 px.
 // Se deja un margen para que la última palabra nunca quede cortada en el borde.
 const ANCHO_FILA_PX = 725;
-const SANGRIA_CONTINUACION = '      '; // las filas que continúan un mismo renglón van con sangría
+const SANGRIA_CONTINUACION = '      ';
+const ANCHO_FILA_TENS_PX = 880; // las filas que continúan un mismo renglón van con sangría
 let _ctxMedida = null;
 function anchoTextoPx(t){
   try{
@@ -2347,7 +2365,8 @@ function anchoTextoPx(t){
 }
 // Parte cada renglón escrito por el técnico para que llene la fila hasta el final y
 // siga en la fila de abajo con sangría. Una palabra más larga que la fila se corta.
-function dividirEnFilasConSangria(texto){
+function dividirEnFilasConSangria(texto, anchoMax){
+  const ANCHO = anchoMax || ANCHO_FILA_PX;
   const filas = [];
   String(texto || '').split('\n').forEach(parrafo => {
     const palabras = parrafo.trim().split(/\s+/).filter(Boolean);
@@ -2356,12 +2375,12 @@ function dividirEnFilasConSangria(texto){
     palabras.forEach(palabra => {
       const prefijo = actual ? actual + ' ' : (filas.length && filas._continua ? SANGRIA_CONTINUACION : '');
       let propuesta = prefijo + palabra;
-      if(anchoTextoPx(propuesta) <= ANCHO_FILA_PX){ actual = propuesta; return; }
+      if(anchoTextoPx(propuesta) <= ANCHO){ actual = propuesta; return; }
       if(actual){ filas.push(actual); filas._continua = true; propuesta = SANGRIA_CONTINUACION + palabra; }
       // palabra demasiado larga para una fila: se corta por caracteres
-      while(anchoTextoPx(propuesta) > ANCHO_FILA_PX){
+      while(anchoTextoPx(propuesta) > ANCHO){
         let n = propuesta.length - 1;
-        while(n > SANGRIA_CONTINUACION.length + 1 && anchoTextoPx(propuesta.slice(0, n)) > ANCHO_FILA_PX) n--;
+        while(n > SANGRIA_CONTINUACION.length + 1 && anchoTextoPx(propuesta.slice(0, n)) > ANCHO) n--;
         filas.push(propuesta.slice(0, n)); filas._continua = true;
         propuesta = SANGRIA_CONTINUACION + propuesta.slice(n);
       }
@@ -2485,11 +2504,17 @@ function calcularCambiosTens(grid, equipo, cliente){
   marcarCasilla(grid, cambios, equipo.limpiezaExterior ? 'ExteriorSI' : 'ExteriorNO');
   agregarCampoDebajo(grid, cambios, 'diagnostico', equipo.diagnostico);
   const meds = equipo.tensMedidas || tensMedidasDefault();
+  const CENTRO = { horizontalAlignment: 'CENTER' };
+  poner(41, 1, 'EQUIPO PATRÓN', CENTRO);
+  poner(41, 9, 'EQUIPO BAJO MEDIDA', CENTRO);
+  poner(42, 1, TENS_ENCABEZADO, CENTRO);
+  poner(42, 9, TENS_ENCABEZADO, CENTRO);
   meds.slice(0, 6).forEach((m, i) => {
-    poner(43 + i, 1, tensCelda(m.pSis, m.pDia, m.pPul, false));
-    poner(43 + i, 9, tensCelda(m.sis, m.dia, m.pul, true));
+    poner(43 + i, 1, tensCelda(m.pSis, m.pDia, m.pPul), CENTRO);
+    poner(43 + i, 9, tensCelda(m.sis, m.dia, m.pul), CENTRO);
   });
-  const lineas = dividirEnFilasConSangria(tensObservaciones(equipo));
+  // Filas B:Z del formato T (más anchas que en la V7). Medido sobre un informe real exportado por Google.
+  const lineas = dividirEnFilasConSangria(tensObservaciones(equipo), ANCHO_FILA_TENS_PX);
   if(lineas.length > 11){ try{ showToast('Las observaciones no caben completas en el formato: acorte la observación del mantenimiento.'); }catch(e){} }
   for(let i = 0; i < 11; i++) poner(50 + i, 1, lineas[i] || '', lineas[i] ? { horizontalAlignment: 'LEFT' } : null);
   poner(65, 2, equipo.responsable);
@@ -2662,7 +2687,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-a';
+const APP_VERSION = '2026.11.16-b';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -2809,7 +2834,8 @@ async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable, format
     const base = pos;
     pos = (x, y, w, h) => {
       const nx = M + (x - M) * k, nw = w * k, nh = h * k;
-      const ny = y > 400 ? TOP - (TOP - (y + h)) * k - nh : M + (y - M) * k;
+      // las firmas y el sello bajan 16 pt para quedar sobre la línea "Firma(s)" (medido en un informe real)
+      const ny = y > 400 ? TOP - (TOP - (y + h)) * k - nh : M + (y - M) * k - 16;
       return base(nx, ny, nw, nh);
     };
   }
