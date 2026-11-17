@@ -2727,7 +2727,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.17-a';
+const APP_VERSION = '2026.11.17-b';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -2935,7 +2935,8 @@ async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable, format
     pos = (x, y, w, h) => {
       // contenido centrado en la hoja: ancho 622,5 pt × escala 0,770 (70 filas + la fila en blanco) → margen extra de 48 pt
       const DX = (576 - 622.5 * 0.7700) / 2;
-      const nx = M + DX + (x - M) * k, nw = w * k, nh = h * k;
+      // el logo (arriba) se corre 28 pt a la izquierda para quedar centrado en su casilla (medido en un informe real)
+      const nx = M + DX + (x - M) * k - (y > 400 ? 28 : 0), nw = w * k, nh = h * k;
       // las firmas y el sello bajan 30 pt para quedar sobre la línea "Firma(s)" (medido en un informe real)
       const ny = y > 400 ? TOP - (TOP - (y + h)) * k - nh : M + (y - M) * k - 30;
       return base(nx, ny, nw, nh);
