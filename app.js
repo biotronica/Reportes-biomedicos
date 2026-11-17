@@ -2540,6 +2540,8 @@ function calcularCambiosTens(grid, equipo, cliente){
   poner(65, 2, equipo.responsable);
   poner(65, 19, equipo.recibeSatisfaccion);
   // fila en blanco entre la tabla de medidas y OBSERVACIONES (se inserta al final, después de escribir)
+  // la plantilla no trae el borde izquierdo del marco en A51:A55 (filas de observaciones)
+  cambios.push({ bordeIzquierdo: { filaDesde: 50, filaHasta: 55, col: 0 } });
   cambios.push({ insertarFilaAntesDe: 49, alto: 10 });
   return cambios;
 }
@@ -2588,7 +2590,8 @@ function calcularCambiosPlantilla(grid, equipo, cliente){
 async function aplicarCambiosEnSheet(spreadsheetId, sheetId, cambios){
   if(!cambios.length) return;
   const inserciones = cambios.filter(c => c.insertarFilaAntesDe != null);
-  cambios = cambios.filter(c => c.insertarFilaAntesDe == null);
+  const bordes = cambios.filter(c => c.bordeIzquierdo);
+  cambios = cambios.filter(c => c.insertarFilaAntesDe == null && !c.bordeIzquierdo);
   const requests = cambios.map(cambio => {
     const celda = { userEnteredValue: { stringValue: cambio.value } };
     let fields = 'userEnteredValue';
@@ -2609,6 +2612,11 @@ async function aplicarCambiosEnSheet(spreadsheetId, sheetId, cambios){
         fields
       }
     };
+  });
+  bordes.forEach(b => {
+    const x = b.bordeIzquierdo;
+    requests.push({ updateBorders: { range: { sheetId, startRowIndex: x.filaDesde, endRowIndex: x.filaHasta, startColumnIndex: x.col, endColumnIndex: x.col + 1 },
+      left: { style: 'SOLID', width: 1, color: { red: 0, green: 0, blue: 0 } } } });
   });
   // filas nuevas al final, de abajo hacia arriba, para no correr las celdas ya escritas
   inserciones.sort((a, b) => b.insertarFilaAntesDe - a.insertarFilaAntesDe).forEach(f => {
@@ -2719,7 +2727,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.16-h';
+const APP_VERSION = '2026.11.17-a';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -2805,6 +2813,8 @@ async function exportarComoPdf(sheetsFileId, sheetId, nombreResponsable, formato
     sheetnames: 'false',
     pagenumbers: 'false'
   });
+  // El formato T es más alto: al ajustarse a la página queda más angosto, así que se centra
+  if(formatoT) params.set('horizontal_alignment', 'CENTER');
   const url = 'https://docs.google.com/spreadsheets/d/' + sheetsFileId + '/export?' + params.toString();
   const res = await fetch(url, { headers: driveHeaders() });
   if(!res.ok) throw new Error('No se pudo exportar a PDF (HTTP ' + res.status + ')');
@@ -2923,7 +2933,9 @@ async function pegarLogoFirmaSello(bytesOriginalesPdf, nombreResponsable, format
     const k = 0.7759 / 0.8406, M = 18, TOP = 774;
     const base = pos;
     pos = (x, y, w, h) => {
-      const nx = M + (x - M) * k, nw = w * k, nh = h * k;
+      // contenido centrado en la hoja: ancho 622,5 pt × escala 0,770 (70 filas + la fila en blanco) → margen extra de 48 pt
+      const DX = (576 - 622.5 * 0.7700) / 2;
+      const nx = M + DX + (x - M) * k, nw = w * k, nh = h * k;
       // las firmas y el sello bajan 30 pt para quedar sobre la línea "Firma(s)" (medido en un informe real)
       const ny = y > 400 ? TOP - (TOP - (y + h)) * k - nh : M + (y - M) * k - 30;
       return base(nx, ny, nw, nh);
