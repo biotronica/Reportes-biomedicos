@@ -168,10 +168,29 @@ function puntosSociedad(v){
 }
 function setPath(path, value){
   if(CAMPOS_MAYUS.has(path)) value = aMayus(value);
+  if(path.startsWith('cliente.')) recordarClienteDeInformes();
   const parts = path.split('.');
   let obj = state;
   for(let i=0;i<parts.length-1;i++){ obj = obj[parts[i]]; }
   obj[parts[parts.length-1]] = value;
+}
+
+// Datos del cliente con que se generó cada informe. Si después se corrigen, la app avisa
+// y permite actualizar esos informes (sin volver a llenar los equipos).
+const CAMPOS_CLIENTE_INFORME = ['nombre', 'solicitante', 'personaCargo', 'contacto', 'fecha'];
+function copiaClienteInforme(c){
+  const o = {}; CAMPOS_CLIENTE_INFORME.forEach(k => { o[k] = String((c && c[k]) || '').trim(); }); return o;
+}
+// Informes generados antes de esta versión no tienen la copia: se toma la de ahora, justo antes del cambio.
+function recordarClienteDeInformes(){
+  (state.equipos || []).forEach(eq => {
+    if(eq.informeOficialGenerado && !eq.informeCliente) eq.informeCliente = copiaClienteInforme(state.cliente);
+  });
+}
+function informesConClienteDesactualizado(){
+  const actual = copiaClienteInforme(state.cliente);
+  return (state.equipos || []).filter(eq => eq.informeOficialGenerado && eq.informeCliente && TEMPLATE_FILE_IDS[eq.tipo] &&
+    CAMPOS_CLIENTE_INFORME.some(k => eq.informeCliente[k] !== actual[k]));
 }
 
 /* ============== TOAST ============== */
@@ -852,6 +871,11 @@ function confirmarCambioClienteSiHaceFalta(nombreAnterior, nombreNuevo){
   if(!state.equipos.length) return true;
   if(normNombre(nombreAnterior) === normNombre(nombreNuevo)) return true;
   if(!nombreAnterior) return true; // no había cliente antes, nada que borrar
+  // Corregir el nombre del MISMO cliente no borra nada: se conservan los equipos y los
+  // informes ya generados se pueden actualizar desde la lista de equipos.
+  if(confirm('¿Está CORRIGIENDO el nombre de este mismo cliente?\n\n"' + nombreAnterior + '" → "' + nombreNuevo + '"\n\n' +
+    'Aceptar = es una corrección: se conservan los ' + state.equipos.length + ' equipo(s) y luego puede actualizar los reportes.\n' +
+    'Cancelar = es OTRO cliente.')) return 'correccion';
   if(!confirm('Ya tienes ' + state.equipos.length + ' equipo(s) agregado(s) para "' + nombreAnterior + '". Al cambiar de cliente se van a quitar de esta visita (no se borra nada de lo ya guardado en Drive). ¿Continuar?')){
     return false;
   }
@@ -906,7 +930,18 @@ function pickResponsable(nombre){
   saveState();
 }
 function pickClienteExistente(nombre){
-  if(!confirmarCambioClienteSiHaceFalta(state.cliente.nombre, nombre)) return;
+  const decision = confirmarCambioClienteSiHaceFalta(state.cliente.nombre, nombre);
+  if(!decision) return;
+  if(decision === 'correccion'){
+    setPath('cliente.nombre', puntosSociedad(nombre));
+    renderClienteSuggestions('');
+    manejarNombreClienteIngresado(nombre);
+    saveState();
+    render();
+    showToast('Nombre corregido. Los equipos se conservan.');
+    return;
+  }
+  recordarClienteDeInformes();
   state.cliente.nombre = puntosSociedad(nombre);
   state.cliente.solicitante = '';
   state.cliente.personaCargo = '';
@@ -1395,6 +1430,7 @@ function renderExportar(){
         <div style="flex:1;">${driveOn ? 'Conectado a Google Drive' : 'No conectado a Google Drive'}</div>
         ${driveOn ? '' : '<button class="btn btn-primary btn-sm" data-action="connectDrive">Conectar</button>'}
       </div>
+      ${avisoClienteCorregidoHtml()}
       ${botonMasivoHtml()}
       ${rows}
       ${botonActaEntregaHtml()}
@@ -1413,6 +1449,74 @@ function equiposPendientes(){
 // archivos anteriores (PDF y Excel) se envían a la papelera de Drive.
 function equiposParaGenerarTodos(){
   return state.equipos.filter(eq => TEMPLATE_FILE_IDS[eq.tipo]);
+}
+
+// Aviso cuando se corrigieron los datos del cliente después de generar informes.
+function avisoClienteCorregidoHtml(){
+  const lista = informesConClienteDesactualizado();
+  if(!lista.length) return '';
+  const driveOn = !!state.driveToken && Date.now() < state.driveExpiry;
+  return `
+    <div class="card" style="background:#fff4e0;border:1px solid #f0b44c;">
+      <div class="card-title">✏️ Datos del cliente corregidos</div>
+      <div class="status-line" style="text-align:left;margin:0 0 10px;">
+        ${lista.length} reporte(s) ya generado(s) tienen los datos anteriores del cliente. Actualícelos para que queden con los datos corregidos
+        (no hay que volver a llenar los equipos; los archivos anteriores se envían a la papelera de Drive).
+        Si ya generó el acta de entrega, vuelva a generarla también.
+      </div>
+      <button class="btn btn-primary btn-sm" style="width:100%;" data-action="actualizarInformesCliente" ${driveOn ? '' : 'disabled style="opacity:.5"'}>🔄 Actualizar ${lista.length} reporte(s)</button>
+      ${driveOn ? '' : '<div class="status-line">Conecte Google Drive para actualizarlos.</div>'}
+      <div class="status-line" id="status_actualizarCliente"></div>
+    </div>`;
+}
+
+// Si el nombre del cliente se corrigió, la carpeta de Drive con el nombre anterior se
+// renombra (solo si todavía no existe una con el nombre corregido), para que los reportes
+// sigan en la misma carpeta de siempre.
+async function renombrarCarpetaClienteSiHaceFalta(nombreAnterior, nombreNuevo, raizId){
+  if(!nombreAnterior || !nombreNuevo || normNombre(nombreAnterior) === normNombre(nombreNuevo)) return;
+  const raiz = raizId || CONFIG.MANTENIMIENTOS_FOLDER_ID;
+  const q = "mimeType = 'application/vnd.google-apps.folder' and '" + raiz + "' in parents and trashed = false";
+  const res = await fetch('https://www.googleapis.com/drive/v3/files?q=' + encodeURIComponent(q) + '&pageSize=1000&fields=files(id,name)', { headers: driveHeaders() });
+  if(!res.ok) return;
+  const carpetas = (await res.json()).files || [];
+  if(carpetas.some(f => normNombre(f.name) === normNombre(nombreNuevo))) return;
+  const vieja = carpetas.find(f => normNombre(f.name) === normNombre(nombreAnterior));
+  if(!vieja) return;
+  await fetch('https://www.googleapis.com/drive/v3/files/' + vieja.id, {
+    method: 'PATCH', headers: Object.assign({ 'Content-Type': 'application/json' }, driveHeaders()), body: JSON.stringify({ name: nombreNuevo.trim() })
+  });
+}
+
+async function actualizarInformesCliente(){
+  if(!state.driveToken){ showToast('Primero conecta tu cuenta de Google Drive.'); return; }
+  const lista = informesConClienteDesactualizado();
+  if(!lista.length) return;
+  const setStatus = (msg, cls) => { const e = document.getElementById('status_actualizarCliente'); if(e){ e.textContent = msg; e.className = 'status-line ' + (cls || ''); } };
+  try{
+    setStatus('Revisando la carpeta del cliente…');
+    const nombresAnteriores = [...new Set(lista.map(eq => eq.informeCliente.nombre).filter(Boolean))];
+    for(const anterior of nombresAnteriores){
+      await renombrarCarpetaClienteSiHaceFalta(anterior, state.cliente.nombre);
+      for(const eq of lista.filter(e => esTipoTens(e.tipo) && e.informeCliente.nombre === anterior)){
+        await renombrarCarpetaClienteSiHaceFalta(anterior, state.cliente.nombre, await carpetaTensMarca(eq.marca)).catch(() => {});
+      }
+    }
+  }catch(e){ /* si no se pudo renombrar, los reportes igual se guardan en la carpeta del nombre corregido */ }
+  let ok = 0; const fallidos = [];
+  for(let i = 0; i < lista.length; i++){
+    const eq = lista[i];
+    setStatus(`Actualizando ${i + 1} de ${lista.length}: ${eq.tipo} ${eq.informeNo || ''}…`);
+    try{
+      const marcaAntes = eq.informeOficialMarca;
+      await generarInformeOficial(eq.id, await carpetaClienteDe(eq));
+      if(eq.informeOficialMarca !== marcaAntes) ok++; else fallidos.push(eq.tipo);
+    }catch(err){ fallidos.push(eq.tipo); }
+  }
+  render();
+  const msg = fallidos.length ? `✓ ${ok} actualizado(s). ✗ ${fallidos.length} con error: ${fallidos.join(', ')}` : `✓ ${ok} reporte(s) actualizado(s) con los datos corregidos del cliente.`;
+  showToast(fallidos.length ? 'Algunos reportes no se pudieron actualizar.' : 'Reportes actualizados.');
+  setTimeout(() => setStatus(msg, fallidos.length ? 'err' : 'ok'), 50);
 }
 
 function botonMasivoHtml(){
@@ -2088,6 +2192,7 @@ function iniciarOtroCliente(){
 function usarClienteExistente(nombre){
   const c = clientesCache.clientes.find(x => x.nombre === nombre);
   if(!c) return;
+  if(state.equipos.length && !confirm('Ya tienes ' + state.equipos.length + ' equipo(s) en esta visita de "' + (state.cliente.nombre || 'este cliente') + '". Al empezar una visita nueva se quitan de aquí (no se borra nada de lo ya guardado en Drive).\n\nSi solo quiere corregir los datos del cliente, cancele y corríjalos en "Datos del cliente".\n\n¿Empezar visita nueva?')) return;
   state.cliente = { nombre: c.nombre, solicitante: c.solicitante, personaCargo: c.personaCargo, contacto: c.contacto, fecha: todayISO() };
   state.equipos = [];
   clienteSeleccionado = null;
@@ -2915,7 +3020,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.19-c';
+const APP_VERSION = '2026.11.19-d';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -4051,6 +4156,7 @@ async function generarInformeOficial(id, folderId){
 
     eq.informeArchivos = { pdfId: pdfFile.id, xlsxId: xlsxFile.id, carpetaPdfId, carpetaMesId };
     eq.informeOficialGenerado = true;
+    eq.informeCliente = copiaClienteInforme(state.cliente);
     eq.informeOficialFecha = todayISO();
     eq.informeOficialMarca = Date.now();
     saveState();
@@ -4326,6 +4432,7 @@ function onAppClick(e){
     case 'subirDrive': subirDrive(id); break;
     case 'prepararGuardado': prepararGuardado(id); break;
     case 'prepararGuardadoMasivo': prepararGuardadoMasivo(); break;
+    case 'actualizarInformesCliente': actualizarInformesCliente(); break;
     case 'pedirSaludoActa': pedirSaludoActa(); break;
     case 'cancelarActaEntrega': cancelarActaEntrega(); break;
     case 'generarActaEntrega': generarActaEntrega(target.dataset.saludo); break;
