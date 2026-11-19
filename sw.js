@@ -1,4 +1,6 @@
-const CACHE_NAME = 'reportes-intelmedica-v20';
+// APP DE REPORTES DE MANTENIMIENTO · INTELMEDICA — service worker
+// Este archivo va SOLO en github.com/biotronica/Reportes-biomedicos
+const CACHE_NAME = 'reportes-intelmedica-v21';
 const ASSETS = [
   './',
   './index.html',
