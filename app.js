@@ -2382,7 +2382,7 @@ async function obtenerGridPrimera(spreadsheetId){
   );
 
   const metaUrl = 'https://sheets.googleapis.com/v4/spreadsheets/' + spreadsheetId
-    + '?fields=sheets(properties(sheetId,title),merges)';
+    + '?fields=sheets(properties(sheetId,title),merges,data(rowMetadata(pixelSize),columnMetadata(pixelSize)))';
   const metaRes = await fetch(metaUrl, { headers: driveHeaders() });
   if(!metaRes.ok) throw new Error('No se pudo leer la información de la hoja (HTTP ' + metaRes.status + ')');
   const metaData = await metaRes.json();
@@ -2392,7 +2392,28 @@ async function obtenerGridPrimera(spreadsheetId){
     s: { r: m.startRowIndex || 0, c: m.startColumnIndex || 0 },
     e: { r: m.endRowIndex || 0, c: m.endColumnIndex || 0 }
   }));
-  return { sheetId: hoja.properties.sheetId, filas, merges };
+  // Ancho de cada columna y alto de cada fila (px), para saber cuánto texto cabe en una fila o un cuadro.
+  const datos = (hoja.data && hoja.data[0]) || {};
+  const anchosCol = (datos.columnMetadata || []).map(m => (m && m.pixelSize) || 0);
+  const altosFila = (datos.rowMetadata || []).map(m => (m && m.pixelSize) || 0);
+  return { sheetId: hoja.properties.sheetId, filas, merges, anchosCol, altosFila };
+}
+
+// Celda combinada que contiene (r,c), o null.
+function mergeQueContiene(grid, r, c){
+  return (grid.merges || []).find(m => r >= m.s.r && r < m.e.r && c >= m.s.c && c < m.e.c) || null;
+}
+// Ancho útil (px) para escribir texto en la fila r desde la columna c: el de su celda
+// combinada, o si no está combinada, hasta la columna S (fin del renglón impreso del formato).
+// Devuelve null si la hoja no trajo medidas (entonces se usa el ancho fijo de respaldo).
+function anchoUtilFila(grid, r, c){
+  const anchos = grid.anchosCol || [];
+  if(!anchos.length) return null;
+  const m = mergeQueContiene(grid, r, c);
+  const desde = m ? m.s.c : c, hasta = m ? m.e.c : 19;
+  let total = 0;
+  for(let i = desde; i < hasta; i++) total += anchos[i] || 0;
+  return total > 100 ? total - 14 : null; // margen interno de la celda + holgura para la última palabra
 }
 
 function findCellsWithText(grid, text){
@@ -2491,7 +2512,8 @@ function marcarCampo(grid, cambios, clave, valor, formato){
 function reemplazarCampo(grid, cambios, clave, valor){
   const pos = CAMPOS_V7[clave];
   if(!pos) return;
-  marcarCambio(grid, cambios, pos[0], pos[1], valor == null ? '' : String(valor));
+  const texto = valor == null ? '' : String(valor);
+  marcarCambio(grid, cambios, pos[0], pos[1], texto, clave === 'diagnostico' && texto ? formatoCuadroDiagnostico(grid, pos[0], pos[1], texto) : null);
 }
 
 function agregarCampoDebajo(grid, cambios, clave, valorAdicional){
@@ -2500,7 +2522,29 @@ function agregarCampoDebajo(grid, cambios, clave, valorAdicional){
   if(!pos) return;
   const existente = (grid.filas[pos[0]] && grid.filas[pos[0]][pos[1]]) || '';
   const valorFinal = existente ? existente + '\n' + valorAdicional : valorAdicional;
-  marcarCambio(grid, cambios, pos[0], pos[1], valorFinal);
+  marcarCambio(grid, cambios, pos[0], pos[1], valorFinal, clave === 'diagnostico' ? formatoCuadroDiagnostico(grid, pos[0], pos[1], valorFinal) : null);
+}
+
+// "Diagnóstico del equipo" es un cuadro: el texto se ajusta (varias líneas dentro del
+// cuadro) en vez de salirse por la derecha. Si aun así no cabe, se baja la letra hasta 7.
+function formatoCuadroDiagnostico(grid, r, c, texto){
+  const formato = { wrapStrategy: 'WRAP', verticalAlignment: 'MIDDLE', horizontalAlignment: 'LEFT' };
+  const m = mergeQueContiene(grid, r, c);
+  const anchos = grid.anchosCol || [], altos = grid.altosFila || [];
+  if(!m || !anchos.length || !altos.length) return formato;
+  let ancho = 0, alto = 0;
+  for(let i = m.s.c; i < m.e.c; i++) ancho += anchos[i] || 0;
+  for(let i = m.s.r; i < m.e.r; i++) alto += altos[i] || 0;
+  if(ancho < 50 || alto < 10) return formato;
+  for(const pt of [10, 9, 8, 7]){
+    // dividirEnFilasConSangria mide en Arial 10: a letra más pequeña cabe proporcionalmente más
+    const lineas = dividirEnFilasConSangria(texto, (ancho - 10) * 10 / pt).length;
+    if(lineas * pt * 1.333 * 1.25 <= alto - 4 || pt === 7){
+      if(pt < 10) formato.fontSize = pt;
+      break;
+    }
+  }
+  return formato;
 }
 
 // Para "Descripción de los procedimientos realizados" y ahora también para
@@ -2510,7 +2554,7 @@ function agregarCampoDebajo(grid, cambios, clave, valorAdicional){
 // Ancho útil de la fila B:S de la plantilla (Arial 10): ~107,7 unidades de Excel ≈ 750 px.
 // Se deja un margen para que la última palabra nunca quede cortada en el borde.
 const ANCHO_FILA_PX = 725;
-const SANGRIA_CONTINUACION = '      ';
+const SANGRIA_CONTINUACION = '  ';
 const ANCHO_FILA_TENS_PX = 900; // medido en el informe real: la fila B:Z mide ~908 px de texto // las filas que continúan un mismo renglón van con sangría
 let _ctxMedida = null;
 function anchoTextoPx(t){
@@ -2584,18 +2628,19 @@ const MAX_CARACTERES_FILA_OBSERVACIONES = 100;
 function agregarObservacionesAdicionales(grid, cambios, textoAdicional, mantenerFija){
   if(textoAdicional == null || textoAdicional === '') return;
   const [filaFija, col] = CAMPOS_V7.observaciones;
+  const ancho = anchoUtilFila(grid, filaFija + 1, col) || undefined;
   if(mantenerFija === false){
     // Se reemplaza por completo: el texto nuevo empieza desde la fila fija, y se
     // borra cualquier resto que hubiera quedado de la frase original en las filas
     // siguientes (por si el texto nuevo ocupa menos filas que antes).
-    const lineas = dividirEnFilasConSangria(textoAdicional)
+    const lineas = dividirEnFilasConSangria(textoAdicional, ancho)
       .slice(0, FILAS_OBSERVACIONES_DISPONIBLES + 1);
     for(let i = 0; i <= FILAS_OBSERVACIONES_DISPONIBLES; i++){
       marcarCambio(grid, cambios, filaFija + i, col, lineas[i] || '', lineas[i] ? { horizontalAlignment: 'LEFT' } : null);
     }
     return;
   }
-  const lineas = dividirEnFilasConSangria(textoAdicional)
+  const lineas = dividirEnFilasConSangria(textoAdicional, ancho)
     .slice(0, FILAS_OBSERVACIONES_DISPONIBLES);
   lineas.forEach((linea, i) => marcarCambio(grid, cambios, filaFija + 1 + i, col, linea, { horizontalAlignment: 'LEFT' }));
 }
@@ -2605,9 +2650,10 @@ function agregarObservacionesAdicionales(grid, cambios, textoAdicional, mantener
 // procedimiento adicional que el técnico haya escrito (uno por línea). No toca ni
 // reescribe los procedimientos que ya vienen impresos en la plantilla.
 function agregarProcedimientosAdicionales(grid, cambios, textoAdicional, reemplazarEstandar){
-  const lineas = dividirEnFilasConSangria(textoAdicional);
   const label = findCellsWithText(grid, 'Descripción de los procedimientos realizados:')[0];
   if(!label) return;
+  // Cada renglón se llena hasta el final de la fila impresa (ancho medido en la hoja real).
+  const lineas = dividirEnFilasConSangria(textoAdicional, anchoUtilFila(grid, label.r + 1, label.c) || undefined);
 
   if(reemplazarEstandar){
     // Correctivo / Diagnóstico: se borran los procedimientos estándar impresos en la plantilla
@@ -2738,9 +2784,10 @@ async function aplicarCambiosEnSheet(spreadsheetId, sheetId, cambios){
     let fields = 'userEnteredValue';
     if(cambio.formato){
       celda.userEnteredFormat = {};
-      ['horizontalAlignment','verticalAlignment'].forEach(k => {
+      ['horizontalAlignment','verticalAlignment','wrapStrategy'].forEach(k => {
         if(cambio.formato[k]){ celda.userEnteredFormat[k] = cambio.formato[k]; fields += ',userEnteredFormat.' + k; }
       });
+      if(cambio.formato.fontSize){ celda.userEnteredFormat.textFormat = { fontSize: cambio.formato.fontSize }; fields += ',userEnteredFormat.textFormat.fontSize'; }
     }
     return {
       updateCells: {
@@ -2868,7 +2915,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.19-b';
+const APP_VERSION = '2026.11.19-c';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
