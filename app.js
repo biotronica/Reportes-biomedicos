@@ -227,6 +227,7 @@ function toggleDictation(path, targetId, btnEl){
     clearTimeout(limiteDictado);
     const text = e.results[0][0].transcript;
     appendDictatedText(path, targetId, text);
+    setTimeout(() => revisarCampoPuntuacion(document.getElementById(targetId)), 300);
   };
   currentRecognition = rec;
   // Si en 12 segundos no respondió nada (ni resultado ni error) — típico cuando el
@@ -677,6 +678,7 @@ function saveDraft(){
   if((d.tipoMantenimiento === 'Correctivo' || d.tipoMantenimiento === 'Diagnóstico') && !String(d.diagnostico || '').trim()){
     showToast('Escribe el diagnóstico: en ' + d.tipoMantenimiento.toLowerCase() + ' reemplaza la frase "Equipo programado para mantenimiento preventivo".'); return;
   }
+  revisarPuntuacionAlGuardar(d);
   if((!state.editingId || d.numeroCambiado) && informeYaUsado(d.informeNo, d.id) &&
      !confirm('El informe No. ' + d.informeNo + ' ya está asignado a otro equipo.\n\nAceptar = guardarlo así de todas formas.\nCancelar = volver y cambiar el número.')) return;
   if(state.editingId){
@@ -951,6 +953,134 @@ function fieldMicHtml(path, value, label, isTextarea, targetIdOverride){
         <button type="button" class="mic-btn" data-mic-path="${path}" data-mic-target="${targetId}" title="Dictar">🎤</button>
       </div>
     </div>`;
+}
+
+/* ============== REVISIÓN DE PUNTUACIÓN ==============
+   Al terminar de escribir (o dictar) en Diagnóstico, Procedimientos adicionales y
+   Observaciones adicionales se revisa la puntuación y, si falta algo, se muestra la
+   corrección debajo del campo para aplicarla con un toque. Nunca cambia palabras:
+   solo signos, espacios y mayúsculas.
+   - Quita espacios dobles y espacios antes de , . ; : ? ! )
+   - Pone espacio después de , ; : ? ! y del punto entre palabras
+   - Mayúscula al inicio de cada línea y después de . ? !
+   - Punto final en cada línea (cada línea es un procedimiento u observación)
+   - Coma entre acciones seguidas: "se limpia se verifica se cambia" →
+     "se limpia, se verifica, se cambia" (no si va después de que, no, y, porque…)
+==================================================== */
+const CAMPOS_PUNTUACION = new Set(['draft.diagnostico', 'draft.procedimientosAdicionales', 'draft.observaciones']);
+const NO_COMA_ANTES_DE_SE = new Set(('que no ya donde cuando porque lo la le les los las y e o u ni también tambien como si cual cuál quien ' +
+  'nunca aún aun solo sólo mientras pues pero se me te nos el del al a de en con para por sin sobre entre hasta desde según segun cuyo cuya').split(' '));
+const SUBORDINANTES = new Set(['que', 'donde', 'cuando', 'porque', 'si', 'como', 'mientras', 'aunque', 'cual', 'cuál', 'quien']);
+const LETRA = 'A-Za-zÁÉÍÓÚÜÑáéíóúüñ';
+
+function mayusInicial(s){
+  return s.replace(new RegExp('^([^' + LETRA + '0-9]*)([a-záéíóúüñ])'), (m, a, b) => a + b.toUpperCase());
+}
+
+function comasEntreAcciones(oracion){
+  const palabras = oracion.split(' ');
+  let vistoSe = /^se$/i.test(palabras[0] || '');
+  for(let i = 1; i < palabras.length - 1; i++){
+    if(!/^se$/i.test(palabras[i])) continue;
+    const ant = palabras[i - 1];
+    const antLimpia = ant.toLowerCase().replace(/[^a-záéíóúüñ]/g, '');
+    const cercanas = palabras.slice(Math.max(0, i - 3), i).map(p => p.toLowerCase().replace(/[^a-záéíóúüñ]/g, ''));
+    if(vistoSe && !/[,;:.]$/.test(ant) && !NO_COMA_ANTES_DE_SE.has(antLimpia) && !cercanas.some(p => SUBORDINANTES.has(p))){
+      palabras[i - 1] = ant + ',';
+    }
+    vistoSe = true;
+  }
+  return palabras.join(' ');
+}
+
+function revisarPuntuacionLinea(linea){
+  let t = linea.replace(/[ \t\u00A0]+/g, ' ').trim();
+  if(!t) return '';
+  const pre = (t.match(/^([-*•]\s*|\d+[.)]\s+)/) || [''])[0];
+  t = t.slice(pre.length).trim();
+  if(!t) return pre.trim();
+  // direcciones web y correos no se tocan
+  const protegidos = [];
+  t = t.replace(/\S*(?:www\.|https?:\/\/|@)\S*?(?=[,;:!?)]?(?:\s|$))/gi, m => { protegidos.push(m); return '\u0001' + (protegidos.length - 1) + '\u0001'; });
+  t = t.replace(/\s+([,.;:!?)])/g, '$1')                 // sin espacio antes del signo
+       .replace(/\(\s+/g, '(')
+       .replace(/,{2,}/g, ',').replace(/;{2,}/g, ';')
+       .replace(/([^.])\.\.(?!\.)/g, '$1.')               // ".." → "." (respeta "...")
+       .replace(/[,;]+\./g, '.').replace(/\.,/g, '.')
+       .replace(new RegExp('([,;:!?])(?=[' + LETRA + '¿¡(])', 'g'), '$1 ')
+       .replace(new RegExp('([a-záéíóúüñ]{3,})\\.(?=[' + LETRA + ']{2})(?!(?:com|co|net|org|gov|edu)\\b)', 'g'), '$1. ');
+  // oraciones: comas entre acciones y mayúscula inicial
+  // (no se corta en siglas como S.A.S. ni en "S." sueltas)
+  t = t.split(new RegExp('(?<=[' + LETRA + '0-9)]{2}[.]|[!?])\\s+')).map(o => mayusInicial(comasEntreAcciones(o))).join(' ');
+  t = t.replace(/\u0001(\d+)\u0001/g, (m, k) => protegidos[+k]);
+  t = t.replace(/[,;]\s*$/, '');
+  if(new RegExp('[' + LETRA + '0-9)%"»”]$').test(t)) t += '.';
+  return pre + t;
+}
+
+function revisarPuntuacion(texto){
+  return String(texto || '').split('\n').map(revisarPuntuacionLinea)
+    .join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// Diferencias carácter por carácter para resaltar lo que se agregó (verde) o quitó (rojo).
+function diffPuntuacionHtml(a, b){
+  const n = a.length, m = b.length;
+  if(n * m > 4e6) return escapeHtml(b);
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for(let i = n - 1; i >= 0; i--) for(let j = m - 1; j >= 0; j--)
+    L[i][j] = a[i] === b[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  let i = 0, j = 0, html = '';
+  const add = (c, cls) => { html += cls ? `<span class="${cls}">${c === ' ' ? '&nbsp;' : escapeHtml(c)}</span>` : (c === '\n' ? '<br>' : escapeHtml(c)); };
+  while(i < n && j < m){
+    if(a[i] === b[j]){ add(a[i]); i++; j++; }
+    else if(L[i + 1][j] >= L[i][j + 1]){ if(a[i] !== '\n') add(a[i], 'pq-del'); i++; }
+    else { add(b[j], 'pq-add'); j++; }
+  }
+  while(i < n){ if(a[i] !== '\n') add(a[i], 'pq-del'); i++; }
+  while(j < m){ add(b[j], 'pq-add'); j++; }
+  return html;
+}
+
+function revisarCampoPuntuacion(elm){
+  if(!elm || !document.body.contains(elm) || !CAMPOS_PUNTUACION.has(elm.dataset.path)) return;
+  const campo = elm.closest('.field') || elm.parentNode;
+  const anterior = campo.querySelector('.pq-box');
+  const actual = elm.value;
+  const corregido = revisarPuntuacion(actual);
+  if(!actual.trim() || corregido === actual.trim() || elm.dataset.pqIgnorado === actual){
+    if(anterior) anterior.remove();
+    return;
+  }
+  const box = document.createElement('div');
+  box.className = 'pq-box';
+  box.innerHTML = `<div class="pq-tit">✍️ Revisión de puntuación</div>
+    <div class="pq-txt">${diffPuntuacionHtml(actual.trim(), corregido)}</div>
+    <div class="pq-btns"><button type="button" class="pq-ok">✓ Aplicar</button><button type="button" class="pq-no">Dejar como está</button></div>`;
+  box.querySelector('.pq-ok').addEventListener('click', () => {
+    elm.value = corregido; setPath(elm.dataset.path, corregido); saveState(); box.remove();
+    showToast('Puntuación corregida.');
+  });
+  box.querySelector('.pq-no').addEventListener('click', () => { elm.dataset.pqIgnorado = actual; box.remove(); });
+  if(anterior) anterior.replaceWith(box); else campo.appendChild(box);
+}
+
+// Al guardar el equipo: si quedó algo sin revisar, se pregunta una sola vez.
+function revisarPuntuacionAlGuardar(d){
+  const nombres = { diagnostico: 'Diagnóstico', procedimientosAdicionales: 'Procedimientos adicionales', observaciones: 'Observaciones' };
+  const cambios = [];
+  Object.keys(nombres).forEach(k => {
+    const v = String(d[k] || '');
+    const el = document.querySelector('[data-path="draft.' + k + '"]');
+    if(!v.trim() || (el && el.dataset.pqIgnorado === v)) return;
+    const c = revisarPuntuacion(v);
+    if(c !== v.trim()) cambios.push([k, c]);
+  });
+  if(!cambios.length) return;
+  const resumen = cambios.map(([k, c]) => nombres[k] + ':\n' + (c.length > 300 ? c.slice(0, 300) + '…' : c)).join('\n\n');
+  if(confirm('Revisión de puntuación — así quedaría:\n\n' + resumen + '\n\nAceptar = corregir y guardar.\nCancelar = guardar como está.')){
+    cambios.forEach(([k, c]) => { d[k] = c; });
+  }
 }
 
 function continuarCliente(){
@@ -2738,7 +2868,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.19-a';
+const APP_VERSION = '2026.11.19-b';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -3986,6 +4116,8 @@ function wireCommonHandlers(){
           const v = puntosSociedad(elm.value);
           if(v !== elm.value){ elm.value = v; setPath('cliente.nombre', v); }
         }
+        // se espera un momento: si el toque fue en otro botón (Guardar, 🎤), no se mueve la pantalla debajo del dedo
+        if(CAMPOS_PUNTUACION.has(elm.dataset.path)) setTimeout(() => { if(document.activeElement !== elm && !currentRecognition) revisarCampoPuntuacion(elm); }, 400);
         saveState();
       });
     }
