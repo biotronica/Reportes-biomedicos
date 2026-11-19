@@ -1125,15 +1125,26 @@ function renderFormEquipo(){
 function renderEquipoSuggestions(query){
   const box = document.getElementById('equipoSuggestions');
   if(!box) return;
-  const q = (query||'').toLowerCase();
-  const matches = EQUIPOS_LISTA.filter(name => name.toLowerCase().includes(q));
+  // Sin tildes ni mayúsculas ("maquina" encuentra "Máquina"). Primero los que EMPIEZAN con lo
+  // escrito; luego los que tienen una palabra que empieza así. Nunca coincidencias a mitad de palabra.
+  const sinTilde = t => String(t||'').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const q = sinTilde(query).replace(/\s+/g, ' ');
+  const empieza = [], palabra = [];
+  EQUIPOS_LISTA.forEach(name => {
+    const n = sinTilde(name);
+    if(n.startsWith(q)) empieza.push(name);
+    // con 3 letras o más también busca dentro del nombre, al inicio de otra palabra ("anest" → Máquina de anestesia)
+    else if(q.length >= 3 && (' ' + n.replace(/[^a-z0-9ñ]+/g, ' ')).includes(' ' + q)) palabra.push(name);
+  });
+  const orden = (a, b) => a.localeCompare(b, 'es');
+  const matches = empieza.sort(orden).concat(palabra.sort(orden));
   if(!q || matches.length === 0){
     box.innerHTML = '';
     box.className = '';
     return;
   }
   box.className = 'equipo-suggestions';
-  box.innerHTML = matches.slice(0,8).map(name =>
+  box.innerHTML = matches.slice(0,12).map(name =>
     `<div class="equipo-suggestion" data-action="pickEquipoTipo" data-value="${escapeHtml(name)}">${escapeHtml(name)}</div>`
   ).join('');
 }
@@ -2727,7 +2738,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.17-b';
+const APP_VERSION = '2026.11.19-a';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
