@@ -644,11 +644,13 @@ function fusionarConsecutivoRemoto(remoto){
 function cambiarNumeroInforme(){
   const d = state.draft;
   if(!d) return;
-  const nuevo = prompt('Nuevo número de informe (ej: 9100-26).\nDesde este número seguirá el consecutivo.', d.informeNo || '');
+  const tens = esTipoTens(d.tipo);
+  const nuevo = prompt('Nuevo número de informe (ej: ' + (tens ? 'T1003-26' : '9100-26') + ').\nDesde este número seguirá el consecutivo.', d.informeNo || '');
   if(nuevo === null) return;
   const limpio = nuevo.trim();
   if(!limpio){ showToast('Escribe el número.'); return; }
-  if(!parseInformeNo(limpio) && !parseInformeCD(limpio) && !confirm('"' + limpio + '" no tiene el formato 0000-26 ni C-261001, así que no se podrá continuar el consecutivo desde él.\n\n¿Usarlo de todas formas?')) return;
+  // Formatos válidos: 0000-26 (preventivo), C-261001 / D-261001 (correctivo / diagnóstico) y T1003-26 (tensiómetros)
+  if(!parseInformeNo(limpio) && !parseInformeCD(limpio) && !parseInformeT(limpio) && !confirm('"' + limpio + '" no tiene el formato ' + (tens ? 'T1003-26' : '0000-26 ni C-261001') + ', así que no se podrá continuar el consecutivo desde él.\n\n¿Usarlo de todas formas?')) return;
   const anterior = d.informeNo;
   d.informeNo = limpio;
   d.numeroCambiado = true;
@@ -3020,7 +3022,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.19-d';
+const APP_VERSION = '2026.11.19-e';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
