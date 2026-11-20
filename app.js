@@ -2513,6 +2513,8 @@ function mergeQueContiene(grid, r, c){
 // Ancho útil (px) para escribir texto en la fila r desde la columna c: el de su celda
 // combinada, o si no está combinada, hasta la columna S (fin del renglón impreso del formato).
 // Devuelve null si la hoja no trajo medidas (entonces se usa el ancho fijo de respaldo).
+let factorAnchoFila = 0.97;
+const FACTOR_ANCHO_PDF = 0.97, FACTOR_ANCHO_EXCEL = 0.85;
 function anchoUtilFila(grid, r, c){
   const anchos = grid.anchosCol || [];
   if(!anchos.length) return null;
@@ -2520,9 +2522,9 @@ function anchoUtilFila(grid, r, c){
   const desde = m ? m.s.c : c, hasta = m ? m.e.c : 19;
   let total = 0;
   for(let i = desde; i < hasta; i++) total += anchos[i] || 0;
-  // Excel (en el PC) dibuja el texto un poco más ancho que Google Sheets/PDF: con el 92 % del
-  // ancho medido, el renglón queda lleno en el PDF y tampoco se sale de la línea en Excel.
-  return total > 100 ? Math.round((total - 14) * 0.92) : null;
+  // El PDF (Google) y el Excel (en el PC) dibujan la letra distinto: Excel la hace ~13 % más
+  // ancha. Por eso el PDF se arma con el ancho medido y la copia en Excel con uno menor.
+  return total > 100 ? Math.round((total - 14) * factorAnchoFila) : null;
 }
 
 function findCellsWithText(grid, text){
@@ -3024,7 +3026,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.20-c';
+const APP_VERSION = '2026.11.20-d';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -4125,6 +4127,8 @@ async function generarInformeOficial(id, folderId){
 
     setStatus('Llenando datos…');
     const grid = await obtenerGridPrimera(sheetFile.id);
+    const gridOriginal = JSON.parse(JSON.stringify(grid)); // plantilla sin llenar, para la copia en Excel
+    factorAnchoFila = FACTOR_ANCHO_PDF;
     const cambios = calcularCambiosPlantilla(grid, eq, state.cliente);
     await aplicarCambiosEnSheet(sheetFile.id, grid.sheetId, cambios);
 
@@ -4154,6 +4158,21 @@ async function generarInformeOficial(id, folderId){
     // carpeta "Entrega documentos" es exclusivamente para el acta de entrega.
 
     setStatus('Guardando copia en Excel…');
+    // La copia en Excel se reparte en renglones un poco más cortos (Excel dibuja la letra más
+    // ancha que el PDF): así ningún renglón se sale de la línea al abrirlo en el PC.
+    if(!esTipoTens(eq.tipo)){
+      try{
+        factorAnchoFila = FACTOR_ANCHO_EXCEL;
+        const cambiosExcel = calcularCambiosPlantilla(gridOriginal, eq, state.cliente);
+        factorAnchoFila = FACTOR_ANCHO_PDF;
+        const enExcel = new Set(cambiosExcel.filter(c => c.r != null).map(c => c.r + ',' + c.c));
+        const sobrantes = cambios.filter(c => c.r != null && c.insertarFilaAntesDe == null && !c.bordeIzquierdo && !enExcel.has(c.r + ',' + c.c))
+          .map(c => ({ r: c.r, c: c.c, value: '', formato: null }));
+        const distintos = cambiosExcel.filter(c => c.r != null && c.insertarFilaAntesDe == null && !c.bordeIzquierdo &&
+          !cambios.some(p => p.r === c.r && p.c === c.c && p.value === c.value));
+        if(distintos.length || sobrantes.length) await aplicarCambiosEnSheet(sheetFile.id, grid.sheetId, distintos.concat(sobrantes));
+      }catch(e){ factorAnchoFila = FACTOR_ANCHO_PDF; /* si falla, el Excel queda igual que el PDF */ }
+    }
     const xlsxBlob = await exportarComoXlsx(sheetFile.id);
     const xlsxFile = await subirArchivoBinario(xlsxBlob, nombre + '.xlsx', MIME_XLSX, carpetaMesId);
 
