@@ -3022,7 +3022,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.19-e';
+const APP_VERSION = '2026.11.20-a';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -3323,7 +3323,9 @@ async function eliminarArchivo(fileId){
    conectado, el progreso (cliente actual + equipos agregados) se guarda también en un
    archivo en Drive, y cada dispositivo revisa ese archivo al conectar para ofrecer traer
    lo más reciente. */
-const SESION_SYNC_NOMBRE = 'Sesion_App_NO_BORRAR.json';
+// Tensiómetros y mantenimiento son visitas distintas: cada modo tiene su propio archivo de
+// sincronización, para que la visita de uno nunca aparezca (ni se mezcle) en el otro.
+const SESION_SYNC_NOMBRE = MODO_TENS ? 'Sesion_App_TENS_NO_BORRAR.json' : 'Sesion_App_NO_BORRAR.json';
 let sesionSyncIdCache = null;
 
 async function obtenerOCrearArchivoSesion(){
@@ -4215,13 +4217,34 @@ function programarUpsertCliente(){
   upsertClienteTimer = setTimeout(() => { upsertClienteEnBase(state.cliente).catch(()=>{}); }, 800);
 }
 
-async function manejarNombreClienteIngresado(nombre){
+async function manejarNombreClienteIngresado(nombre, nombreAnterior){
   nombre = (nombre || '').trim();
   if(!nombre || !state.driveToken) return;
   try{
     if(!clientesCache) await cargarBaseClientes();
     const existente = clientesCache.clientes.find(c => normNombre(c.nombre) === normNombre(nombre));
+    const CAMPOS = [['solicitante', 'Solicitante'], ['personaCargo', 'Persona a cargo'], ['contacto', 'Contacto']];
+    // Se cambió a otro cliente escribiendo el nombre: los datos que quedaron escritos son del
+    // cliente anterior. Si coinciden con los guardados para ese cliente anterior, se quitan.
+    const anterior = nombreAnterior && normNombre(nombreAnterior) !== normNombre(nombre)
+      ? clientesCache.clientes.find(c => normNombre(c.nombre) === normNombre(nombreAnterior)) : null;
+    if(anterior && !state.equipos.length){
+      let quitados = false;
+      CAMPOS.forEach(([k]) => {
+        if(state.cliente[k] && anterior[k] && normNombre(state.cliente[k]) === normNombre(anterior[k]) &&
+           !(existente && normNombre(existente[k] || '') === normNombre(anterior[k]))){ state.cliente[k] = ''; quitados = true; }
+      });
+      if(quitados){ saveState(); render(); }
+    }
     if(existente){
+      // Datos escritos que no coinciden con los guardados para este cliente: se pregunta cuáles dejar.
+      const distintos = CAMPOS.filter(([k]) => existente[k] && state.cliente[k] && normNombre(state.cliente[k]) !== normNombre(existente[k]));
+      if(distintos.length && confirm('Algunos datos escritos no coinciden con los guardados para "' + existente.nombre + '":\n\n' +
+          distintos.map(([k, et]) => et + ': "' + state.cliente[k] + '" → guardado: "' + existente[k] + '"').join('\n') +
+          '\n\nAceptar = usar los datos guardados de este cliente.\nCancelar = dejar los que están escritos (se actualiza la base).')){
+        distintos.forEach(([k]) => { state.cliente[k] = k === 'solicitante' ? aMayus(existente[k]) : existente[k]; });
+        saveState(); render();
+      }else if(distintos.length){ programarUpsertCliente(); }
       let cambiado = false;
       if(!state.cliente.solicitante && existente.solicitante){ state.cliente.solicitante = aMayus(existente.solicitante); cambiado = true; }
       if(!state.cliente.personaCargo && existente.personaCargo){ state.cliente.personaCargo = existente.personaCargo; cambiado = true; }
@@ -4324,7 +4347,7 @@ function wireCommonHandlers(){
         render();
         return;
       }
-      manejarNombreClienteIngresado(nombreClienteInput.value);
+      manejarNombreClienteIngresado(nombreClienteInput.value, nombreAlEnfocar);
     });
   }
   ['fld_cliente_solicitante', 'fld_cliente_personaCargo', 'fld_cliente_contacto'].forEach(id => {
