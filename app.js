@@ -3022,7 +3022,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.20-a';
+const APP_VERSION = '2026.11.20-b';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
@@ -3704,12 +3704,31 @@ async function importarDesdeCarpetasExistentes(onProgreso){
 
 // Crea o actualiza (según exista o no) la fila del cliente en la pestaña "Clientes".
 // Se usa tanto al ir llenando el formulario como al generar un informe.
+const decisionesDatosOtroCliente = {};
 async function upsertClienteEnBase(cliente){
   const id = await obtenerOCrearBaseClientes();
   const filas = await leerRangoSheet(id, 'Clientes!A2:E10000');
   const objetivo = normNombre(cliente.nombre);
   const idx = filas.findIndex(f => normNombre(f[0]||'') === objetivo);
   const filaValores = [cliente.nombre, cliente.solicitante||'', cliente.personaCargo||'', cliente.contacto||'', cliente.fecha||todayISO()];
+
+  // Antes de guardar: si estos datos de contacto ya están guardados para OTRO cliente, lo más
+  // probable es que se hayan quedado escritos del cliente anterior. Se pregunta antes de
+  // guardarlos (una vez por pareja de clientes en esta sesión).
+  const soloDigitos = v => String(v || '').replace(/\D/g, '');
+  const tel = soloDigitos(cliente.contacto);
+  const otro = filas.find(f => normNombre(f[0]||'') && normNombre(f[0]||'') !== objetivo && (
+    (tel.length >= 7 && soloDigitos(f[3]) === tel) ||
+    (cliente.solicitante && cliente.personaCargo && normNombre(f[1]||'') === normNombre(cliente.solicitante) && normNombre(f[2]||'') === normNombre(cliente.personaCargo))));
+  if(otro){
+    const clave = objetivo + '|' + normNombre(otro[0]) + '|' + tel + '|' + normNombre(cliente.solicitante);
+    if(!(clave in decisionesDatosOtroCliente)){
+      decisionesDatosOtroCliente[clave] = confirm('Ojo: estos datos ya están guardados para otro cliente, "' + otro[0] + '":\n\n' +
+        'Solicitante: ' + (cliente.solicitante || '—') + '\nPersona a cargo: ' + (cliente.personaCargo || '—') + '\nContacto: ' + (cliente.contacto || '—') + '\n\n' +
+        '¿Son de verdad los datos de "' + cliente.nombre + '"?\n\nAceptar = sí, guardarlos para ' + cliente.nombre + '.\nCancelar = no (corríjalos en Datos del cliente).');
+    }
+    if(!decisionesDatosOtroCliente[clave]) return;
+  }
 
   if(idx >= 0){
     await fetch('https://sheets.googleapis.com/v4/spreadsheets/' + id + '/values/Clientes!A' + (idx+2) + ':E' + (idx+2) + '?valueInputOption=RAW', {
@@ -4236,7 +4255,14 @@ async function manejarNombreClienteIngresado(nombre, nombreAnterior){
       });
       if(quitados){ saveState(); render(); }
     }
-    if(existente){
+    if(existente && nombreAnterior && normNombre(nombreAnterior) !== normNombre(nombre) && !state.equipos.length){
+      // Se pasó a otro cliente que ya está en la base: se cargan SUS datos (aunque vengan vacíos),
+      // para que no quede nada escrito del cliente anterior.
+      CAMPOS.forEach(([k]) => { state.cliente[k] = k === 'solicitante' ? aMayus(existente[k] || '') : (existente[k] || ''); });
+      saveState(); render();
+      showToast('Datos de "' + existente.nombre + '" cargados desde la base.');
+      await ofrecerContinuarUltimoMantenimiento(nombre);
+    }else if(existente){
       // Datos escritos que no coinciden con los guardados para este cliente: se pregunta cuáles dejar.
       const distintos = CAMPOS.filter(([k]) => existente[k] && state.cliente[k] && normNombre(state.cliente[k]) !== normNombre(existente[k]));
       if(distintos.length && confirm('Algunos datos escritos no coinciden con los guardados para "' + existente.nombre + '":\n\n' +
