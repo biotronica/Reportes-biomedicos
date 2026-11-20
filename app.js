@@ -2513,8 +2513,10 @@ function mergeQueContiene(grid, r, c){
 // Ancho útil (px) para escribir texto en la fila r desde la columna c: el de su celda
 // combinada, o si no está combinada, hasta la columna S (fin del renglón impreso del formato).
 // Devuelve null si la hoja no trajo medidas (entonces se usa el ancho fijo de respaldo).
-let factorAnchoFila = 0.97;
-const FACTOR_ANCHO_PDF = 0.97, FACTOR_ANCHO_EXCEL = 0.85;
+let factorAnchoFila = 1.04;
+// Calibrado con el informe 9079-26 real: en el PDF de Google caben ~6 % más letras que lo que mide
+// la app, y en Excel ~5 % menos. Con estos factores el renglón llena la línea en ambos sin salirse.
+const FACTOR_ANCHO_PDF = 1.04, FACTOR_ANCHO_EXCEL = 0.92;
 function anchoUtilFila(grid, r, c){
   const anchos = grid.anchosCol || [];
   if(!anchos.length) return null;
@@ -3026,7 +3028,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.20-d';
+const APP_VERSION = '2026.11.20-e';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
