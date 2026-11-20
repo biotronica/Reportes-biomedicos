@@ -2520,7 +2520,9 @@ function anchoUtilFila(grid, r, c){
   const desde = m ? m.s.c : c, hasta = m ? m.e.c : 19;
   let total = 0;
   for(let i = desde; i < hasta; i++) total += anchos[i] || 0;
-  return total > 100 ? total - 14 : null; // margen interno de la celda + holgura para la última palabra
+  // Excel (en el PC) dibuja el texto un poco más ancho que Google Sheets/PDF: con el 92 % del
+  // ancho medido, el renglón queda lleno en el PDF y tampoco se sale de la línea en Excel.
+  return total > 100 ? Math.round((total - 14) * 0.92) : null;
 }
 
 function findCellsWithText(grid, text){
@@ -3022,7 +3024,7 @@ function numeroReporteEsImpar(informeNo){
 // Nombre del mes (en español, con mayúscula inicial) según la fecha de la visita —
 // así los reportes quedan organizados por el mes en que se hizo el mantenimiento,
 // no por el día exacto en que se generó el archivo.
-const APP_VERSION = '2026.11.20-b';
+const APP_VERSION = '2026.11.20-c';
 function carpetaTecnicoDe(eq){
   return parseInformeCD(eq.informeNo)
     ? (/evelyn/i.test(eq.responsable || '') ? 'Evelyn' : 'Ramiro')
